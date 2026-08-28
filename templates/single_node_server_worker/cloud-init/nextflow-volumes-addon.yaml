@@ -1,0 +1,77 @@
+#cloud-config
+# Nextflow execution prerequisites for abc-node.
+# Merged in by index.ts when `pulumi config set enableNextflow true` (default on).
+#
+# WHY THIS EXISTS
+#   'abc pipeline run' submits a Nextflow head as a Nomad job, and nf-nomad then
+#   registers one Nomad job per process. Both sides declare host volumes that a
+#   stock deployment does not define, so every one of them fails placement with
+#       Constraint "missing compatible host volumes": 1 nodes excluded by filter
+#   and the run dies without a single task ever starting.
+#
+#   head    volume "abc-tools"  read-only,  mounted at /nxf-work
+#   workers volume "nf-work"    read-write, mounted at /nxf-work
+#
+#   Both sides also invoke /nxf-work/bin/s5cmd for S3 staging, so s5cmd must
+#   exist inside BOTH volumes, not just on the host PATH. Observed without it:
+#       nf-nomad-s5cmd: input sweep rc=127
+#       bash: line 6: /nxf-work/bin/s5cmd: No such file or directory
+#
+# VERIFIED
+#   With this addon, nextflow-io/hello ran to completion on a single node:
+#   four sayHello processes dispatched as Nomad jobs against an S3 work dir on
+#   the local MinIO, with nf-nomad@0.5.0-edge4 and nf-nomad-s5cmd@0.1.7.
+
+# ORDERING: cloud-init runs bootcmd -> write_files -> runcmd. The host_volume
+# stanzas below are written by write_files, but Nomad REFUSES TO START if a
+# host_volume path does not exist. Creating the directories in runcmd is too
+# late: Nomad is started by the base runcmd first, fails, the base readiness
+# check times out, and cloud-init aborts every remaining runcmd — including the
+# ones in this file. So the directories must be made in bootcmd.
+bootcmd:
+  - mkdir -p /opt/abc/tools/bin /opt/abc/nf-work/bin
+  - chmod 0777 /opt/abc/nf-work
+
+write_files:
+  - path: /etc/nomad.d/host-volumes.hcl
+    permissions: '0644'
+    content: |
+      client {
+        host_volume "abc-tools" {
+          path      = "/opt/abc/tools"
+          read_only = true
+        }
+        host_volume "nf-work" {
+          path      = "/opt/abc/nf-work"
+          read_only = false
+        }
+      }
+
+runcmd:
+
+  # s5cmd into both volumes: the head reads it from abc-tools, the workers from
+  # nf-work, and each mounts its own volume at the same /nxf-work path.
+  - |
+    S5CMD_VERSION=2.3.0
+    if curl -fsSL "https://github.com/peak/s5cmd/releases/download/v${S5CMD_VERSION}/s5cmd_${S5CMD_VERSION}_Linux-64bit.tar.gz" -o /tmp/s5cmd.tgz \
+       && tar -xzf /tmp/s5cmd.tgz -C /tmp s5cmd; then
+      install -m 0755 /tmp/s5cmd /opt/abc/tools/bin/s5cmd
+      install -m 0755 /tmp/s5cmd /opt/abc/nf-work/bin/s5cmd
+      rm -f /tmp/s5cmd.tgz /tmp/s5cmd
+      echo "s5cmd staged into both host volumes"
+    else
+      echo "WARNING: s5cmd download failed; pipeline runs will fail at S3 staging" >&2
+    fi
+
+  # A bucket for pipeline work dirs, so --work-dir s3://nf-work/<run>/ resolves.
+  - |
+    for i in $(seq 1 30); do
+      curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1 && break
+      sleep 2
+    done
+    export MC_HOST_local="http://minioadmin:minioadmin@127.0.0.1:9000"
+    mc mb --ignore-existing local/nf-work >/dev/null 2>&1 && echo "bucket nf-work ready"
+
+  - systemctl restart nomad.service
+  # -dev discards state on restart, so the platform job must be resubmitted.
+  - systemctl restart fx-tusd-hook-submit.service

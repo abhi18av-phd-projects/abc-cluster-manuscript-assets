@@ -1,0 +1,82 @@
+#cloud-config
+# Optional Apptainer (Singularity) Nomad task driver addon for abc-node.
+# Merged in by index.ts when `pulumi config set enableApptainerDriver true`.
+#
+# Prerequisites (already provided by the base cloud-init):
+#   - Apptainer v1.3.4 is installed at /usr/bin/apptainer
+#   - Nomad is running with -config=/etc/nomad.d
+#   - /opt/nomad/plugins/ dir is created here
+#
+# What this addon adds:
+#   nomad-driver-apptainer v0.3.0 binary → /opt/nomad/plugins/
+#   /etc/nomad.d/apptainer-driver.hcl    — plugin_dir + driver config
+#
+# Nomad is reloaded (SIGHUP) after the plugin is installed. On the systemd
+# variant, Nomad picks up the new config automatically via -config=/etc/nomad.d.
+# On the Nomad-jobs variant (nomad-dev.yaml), the nomad.service is updated to
+# point at /etc/nomad.d as well.
+#
+# Usage in a Nomad job (after driver is registered):
+#
+#   job "sif-example" {
+#     group "compute" {
+#       task "run" {
+#         driver = "apptainer"
+#
+#         config {
+#           image   = "docker://ubuntu:22.04"   # or a .sif path
+#           command = "/bin/bash"
+#           args    = ["-c", "echo hello from Apptainer"]
+#         }
+#       }
+#     }
+#   }
+#
+# Or via abc job run:
+#   abc job run --driver apptainer myscript.sh
+#
+# Version pins:
+#   nomad-driver-apptainer  v0.3.0
+
+write_files:
+
+  # ── Nomad plugin config: Apptainer driver ────────────────────────────────────
+  # plugin_dir must match the directory where the binary lives.
+  # apptainer_path must point to the apptainer binary (installed by base cloud-init).
+  - path: /etc/nomad.d/apptainer-driver.hcl
+    permissions: '0644'
+    content: |
+      plugin_dir = "/opt/nomad/plugins"
+
+      plugin "nomad-driver-apptainer" {
+        config {
+          enabled        = true
+          apptainer_path = "/usr/bin/apptainer"
+        }
+      }
+
+runcmd:
+  # ── nomad-driver-apptainer v0.3.0 ─────────────────────────────────────────
+  - mkdir -p /opt/nomad/plugins
+  - wget -q https://github.com/apptainer/nomad-driver-apptainer/releases/download/v0.3.0/nomad-driver-apptainer_0.3.0_linux_amd64.tar.gz -O /tmp/nomad-driver-apptainer.tar.gz
+  - tar -xzf /tmp/nomad-driver-apptainer.tar.gz -C /opt/nomad/plugins/ --strip-components=1 nomad-driver-apptainer
+  - chmod +x /opt/nomad/plugins/nomad-driver-apptainer
+  - rm /tmp/nomad-driver-apptainer.tar.gz
+
+  # ── Reload Nomad to pick up the new plugin ────────────────────────────────
+  # systemctl reload sends SIGHUP which triggers Nomad to re-read config + plugins.
+  # The systemd variant uses -config=/etc/nomad.d; the raw nomad-dev variant
+  # picks up /etc/nomad.d via the same flag added to its service unit.
+  - systemctl reload nomad.service || true
+  # Wait for driver fingerprint to appear (up to 30s)
+  - |
+    for i in $(seq 1 15); do
+      nomad node status -json 2>/dev/null \
+        | python3 -c "import sys,json; n=json.load(sys.stdin); \
+          drivers=[d for node in (n if isinstance(n,list) else [n]) \
+          for d in (node.get('Drivers') or {}).keys()]; \
+          sys.exit(0 if 'nomad-driver-apptainer' in drivers else 1)" \
+        && { echo "apptainer driver registered"; break; }
+      sleep 2
+    done
+    echo "NOTE: driver fingerprint check complete (errors above are non-fatal)"

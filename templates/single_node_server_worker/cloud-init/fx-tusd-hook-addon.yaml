@@ -1,0 +1,147 @@
+#cloud-config
+# fx-tusd-hook placement fix for abc-node.
+# Merged in by index.ts when `pulumi config set enableNodePool true` (default on).
+#
+# WHY THIS EXISTS
+#   Two separate faults, both of which leave tus ingestion silently
+#   half-working: uploads accept, but the post-finish S3 rename never fires,
+#   because tusd's ExecStartPre gives up after 60s and starts anyway.
+#
+#   (a) The base job sets no `node_pool`, so it targets `default`. Once the
+#       client joins `compute` it can never place. Observed on a clean deploy:
+#         Deployed  hook  desired 1  placed 0 / No allocations placed
+#
+#   (b) MORE IMPORTANTLY: submitting from cloud-init runcmd does not survive.
+#       Nomad runs here in -dev mode, which does NOT persist job state across a
+#       restart even with an explicit -data-dir. The Pulumi program then takes a
+#       `post-init` snapshot, and snapshotting requires stopping the instance.
+#       So every deployment loses its platform jobs immediately after cloud-init
+#       reports success. Verified directly:
+#         submit -> `nomad job status` shows fx-tusd-hook running
+#         systemctl restart nomad -> "No running jobs"
+#
+#   Fix (b) by submitting from a systemd unit on every boot, not once from
+#   cloud-init.
+#
+# WHAT THIS ADDS
+#   - the same job, pinned to `compute`
+#   - a resubmit after the client has registered in that pool
+#   - a real readiness gate on /healthz, so a failure is loud rather than silent
+
+write_files:
+  - path: /opt/nomad/jobs/fx-tusd-hook.nomad.hcl
+    permissions: '0644'
+    content: |
+      job "fx-tusd-hook" {
+        datacenters = ["dc1"]
+        type        = "service"
+        node_pool   = "compute"
+
+        group "hook" {
+          count = 1
+
+          network {
+            port "http" { static = 14002 }
+          }
+
+          service {
+            name     = "fx-tusd-hook"
+            port     = "http"
+            provider = "nomad"
+
+            check {
+              type     = "http"
+              path     = "/healthz"
+              interval = "15s"
+              timeout  = "3s"
+            }
+          }
+
+          task "hook" {
+            driver = "raw_exec"
+
+            config {
+              command = "/usr/bin/python3"
+              args    = ["/opt/fx-tusd-hook/hook.py"]
+            }
+
+            env {
+              PORT                  = "14002"
+              MINIO_ENDPOINT        = "http://127.0.0.1:9000"
+              MINIO_BUCKET          = "tusd"
+              AWS_ACCESS_KEY_ID     = "minioadmin"
+              AWS_SECRET_ACCESS_KEY = "minioadmin"
+              AWS_REGION            = "us-east-1"
+            }
+
+            resources {
+              cpu    = 100
+              memory = 64
+            }
+          }
+        }
+      }
+
+  # ── systemd service: minio ───────────────────────────────────────────────────
+
+  # Helper scripts rather than inline ExecStartPre/Post: systemd unit lines are
+  # a poor place for shell quoting, and a malformed one fails silently-ish.
+  - path: /usr/local/bin/abc-wait-nomad
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Wait for a Nomad leader AND a ready client, or fail.
+      export NOMAD_ADDR="${NOMAD_ADDR:-http://127.0.0.1:4646}"
+      for i in $(seq 1 40); do
+        if curl -sf "${NOMAD_ADDR}/v1/status/leader" >/dev/null 2>&1 \
+           && nomad node status 2>/dev/null | grep -qw ready; then
+          exit 0
+        fi
+        sleep 3
+      done
+      echo "nomad not ready after 120s" >&2
+      exit 1
+
+  - path: /usr/local/bin/abc-wait-tusd-hook
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Gate on the hook actually answering, so a failure is loud rather than
+      # leaving tusd to start against a missing hook.
+      for i in $(seq 1 40); do
+        if curl -sf http://127.0.0.1:14002/healthz >/dev/null 2>&1; then
+          echo "fx-tusd-hook ready"
+          exit 0
+        fi
+        sleep 3
+      done
+      echo "ERROR: fx-tusd-hook did not become ready; tus post-finish hook will not fire" >&2
+      nomad job status fx-tusd-hook >&2 || true
+      exit 1
+
+  - path: /etc/systemd/system/fx-tusd-hook-submit.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Submit fx-tusd-hook to Nomad (re-runs each boot; -dev loses state)
+      After=nomad.service
+      Requires=nomad.service
+      Before=tusd.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      Environment=NOMAD_ADDR=http://127.0.0.1:4646
+      ExecStartPre=/usr/local/bin/abc-wait-nomad
+      ExecStart=/usr/local/bin/nomad job run -detach /opt/nomad/jobs/fx-tusd-hook.nomad.hcl
+      ExecStartPost=/usr/local/bin/abc-wait-tusd-hook
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # Submit on every boot rather than once from cloud-init, so the job survives
+  # the stop/start that snapshotting performs.
+  - systemctl daemon-reload
+  - systemctl enable --now fx-tusd-hook-submit.service
+  - systemctl restart tusd.service

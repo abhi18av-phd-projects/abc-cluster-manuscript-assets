@@ -1,0 +1,57 @@
+#cloud-config
+# Node-pool alignment addon for abc-node.
+# Merged in by index.ts when `pulumi config set enableNodePool true` (default on).
+#
+# WHY THIS EXISTS
+#   The CLI generates user jobs with `node_pool = "compute"` (overridable with
+#   `abc job run --node-pool`). A stock single-node deployment registers its
+#   client in the `default` pool and creates no `compute` pool, so the very
+#   first `abc job run` fails with:
+#       job "..." is in nonexistent node pool "compute"
+#   The platform's own fx-tusd-hook job sets no node_pool at all, so it lands in
+#   `default`. Base and CLI therefore disagree about where work runs.
+#
+# WHAT THIS ADDS
+#   - a `compute` node pool
+#   - the client joins `compute`, matching the CLI's default
+#   - fx-tusd-hook is pinned to `compute` so platform and user jobs agree
+#
+# A node belongs to exactly one pool, so both must name the same one.
+
+write_files:
+  - path: /etc/nomad.d/node-pool.hcl
+    permissions: '0644'
+    content: |
+      client {
+        node_pool = "compute"
+      }
+
+  - path: /opt/nomad/pools/compute.nomad.hcl
+    permissions: '0644'
+    content: |
+      node_pool "compute" {
+        description = "General compute pool — the CLI's default target for user jobs"
+      }
+
+runcmd:
+  - mkdir -p /opt/nomad/pools
+
+  # Create the pool before restarting the client into it, so registration lands
+  # in an existing pool rather than creating an implicit one.
+  - |
+    for i in $(seq 1 30); do
+      curl -sf http://127.0.0.1:4646/v1/status/leader >/dev/null 2>&1 && break
+      sleep 3
+    done
+    NOMAD_ADDR=http://127.0.0.1:4646 nomad node pool apply /opt/nomad/pools/compute.nomad.hcl
+
+  - systemctl restart nomad.service
+
+  # Wait for the client to re-register in `compute` before anything is submitted.
+  - |
+    for i in $(seq 1 30); do
+      POOL=$(NOMAD_ADDR=http://127.0.0.1:4646 nomad node status -json 2>/dev/null \
+             | grep -o '"NodePool":"[^"]*"' | head -1 | cut -d'"' -f4)
+      [ "$POOL" = "compute" ] && { echo "node registered in pool: compute"; break; }
+      sleep 3
+    done

@@ -1,0 +1,623 @@
+#cloud-config
+# Observability stack addon for abc-node single-node examples
+#
+# Merge this fragment with the base cloud-init via mergeCloudInit() in index.ts
+# when `pulumi config set observability true`.
+#
+# Services added (all managed by systemd):
+#   victoriametrics.service        — metrics store + promscrape              :8428
+#   victorialogs.service           — log store (Loki-compat write path)      :9428
+#   victoriametrics-traces.service — distributed tracing (OTLP only)        :10428
+#                                    OTLP gRPC also on :4317
+#   grafana.service                — dashboards (datasources + dashboards    :3000
+#                                    provisioned; admin/admin)
+#   alloy.service                  — collector binary                        :12345
+#
+# Docker containers: victoriametrics, victorialogs, victoriametrics-traces, grafana.
+# Alloy: native binary (arch-aware download, amd64).
+#
+# Alloy collects:
+#   host metrics (unix exporter) → VictoriaMetrics remote_write
+#   Nomad /v1/metrics            → VictoriaMetrics remote_write
+#   Nomad alloc logs             → VictoriaLogs Loki push
+#   OTLP receiver (:4317 gRPC, :4318 HTTP) → VictoriaTraces OTLP HTTP
+#
+# Grafana datasources (auto-provisioned):
+#   VictoriaMetrics → Prometheus datasource at http://127.0.0.1:8428
+#   VictoriaLogs    → victoriametrics-logs-datasource plugin at http://127.0.0.1:9428
+#
+# Grafana dashboards (auto-provisioned):
+#   "abc-node Overview" — Nomad allocations, host CPU/memory/disk, service health
+#
+# VictoriaTraces Grafana datasource is NOT pre-provisioned (v0.8.x pre-release;
+# native plugin not yet published). Add manually once workloads emit traces:
+#   Datasource type: Tempo or Jaeger (temporary)
+#   URL: http://<vm-ip>:10428
+#
+# Version pins:
+#   VictoriaMetrics                  v1.115.0
+#   VictoriaLogs                     v1.50.0
+#   VictoriaTraces                   v0.8.2
+#   Grafana                          11.4.0
+#   victoriametrics-logs-datasource  v0.11.0   (pre-downloaded; no GF_INSTALL_PLUGINS)
+#   Alloy                            1.15.1
+
+write_files:
+
+  # ── VictoriaMetrics promscrape config ────────────────────────────────────────
+  - path: /opt/victoriametrics/promscrape.yaml
+    content: |
+      global:
+        scrape_interval: 15s
+        external_labels:
+          cluster: abc-node
+
+      scrape_configs:
+        - job_name: victoriametrics
+          static_configs:
+            - targets: ["127.0.0.1:8428"]
+
+        - job_name: nomad
+          metrics_path: /v1/metrics
+          params:
+            format: ["prometheus"]
+          static_configs:
+            - targets: ["127.0.0.1:4646"]
+
+        - job_name: victorialogs
+          static_configs:
+            - targets: ["127.0.0.1:9428"]
+
+        - job_name: victoriametrics_traces
+          static_configs:
+            - targets: ["127.0.0.1:10428"]
+
+        - job_name: grafana
+          static_configs:
+            - targets: ["127.0.0.1:3000"]
+
+        - job_name: alloy
+          static_configs:
+            - targets: ["127.0.0.1:12345"]
+
+  # ── Alloy configuration ──────────────────────────────────────────────────────
+  # Metrics: host + Nomad → VictoriaMetrics remote_write
+  # Logs:    Nomad alloc logs → VictoriaLogs Loki push
+  # Traces:  OTLP receiver → VictoriaTraces OTLP HTTP
+  #
+  # Requires Nomad started with -data-dir=/opt/nomad/data (both base cloud-inits
+  # include this flag; Alloy tails /opt/nomad/data/alloc/*/alloc/logs/).
+  - path: /opt/alloy/config.alloy
+    content: |
+      // ── Node (host) metrics ────────────────────────────────────────────────
+      prometheus.exporter.unix "host" {}
+
+      prometheus.scrape "host_metrics" {
+        targets         = prometheus.exporter.unix.host.targets
+        forward_to      = [prometheus.remote_write.victoriametrics.receiver]
+        job_name        = "node"
+        scrape_interval = "30s"
+      }
+
+      // ── Nomad /v1/metrics ──────────────────────────────────────────────────
+      prometheus.scrape "nomad_metrics" {
+        targets = [{
+          __address__      = "127.0.0.1:4646",
+          __metrics_path__ = "/v1/metrics",
+        }]
+        params          = { "format" = ["prometheus"] }
+        scrape_interval = "30s"
+        forward_to      = [prometheus.remote_write.victoriametrics.receiver]
+        job_name        = "nomad"
+      }
+
+      // ── Remote write → VictoriaMetrics ────────────────────────────────────
+      prometheus.remote_write "victoriametrics" {
+        endpoint {
+          url = "http://127.0.0.1:8428/api/v1/write"
+        }
+      }
+
+      // ── Nomad alloc log collection → VictoriaLogs ─────────────────────────
+      local.file_match "nomad_alloc_logs" {
+        path_targets = [{ __path__ = "/opt/nomad/data/alloc/*/alloc/logs/*.std*.*" }]
+      }
+
+      loki.source.file "nomad_logs" {
+        targets    = local.file_match.nomad_alloc_logs.targets
+        forward_to = [loki.process.add_labels.receiver]
+      }
+
+      loki.process "add_labels" {
+        stage.regex {
+          expression = "/alloc/(?P<alloc_id>[^/]+)/alloc/logs/(?P<task>[^.]+)\\.(?P<stream>std(?:out|err))\\."
+          source     = "filename"
+        }
+        stage.labels {
+          values = { alloc_id = "", task = "", stream = "" }
+        }
+        forward_to = [loki.write.victorialogs.receiver]
+      }
+
+      loki.write "victorialogs" {
+        endpoint {
+          url = "http://127.0.0.1:9428/insert/loki/api/v1/push"
+        }
+        external_labels = { host = env("HOSTNAME") }
+      }
+
+      // ── OTLP receiver — accepts traces from instrumented apps ──────────────
+      // Binds gRPC :4317 and HTTP :4318 (standard OTLP ports).
+      // Forwards spans to VictoriaTraces via OTLP HTTP.
+      otelcol.receiver.otlp "default" {
+        grpc { endpoint = "0.0.0.0:4317" }
+        http { endpoint = "0.0.0.0:4318" }
+        output {
+          traces = [otelcol.exporter.otlphttp.victoria_traces.input]
+        }
+      }
+
+      // ── Forward traces → VictoriaTraces ───────────────────────────────────
+      // VictoriaTraces OTLP HTTP path: /insert/opentelemetry/v1/traces
+      // Alloy's otlphttp exporter appends /v1/traces to the endpoint below.
+      otelcol.exporter.otlphttp "victoria_traces" {
+        client {
+          endpoint = "http://127.0.0.1:10428/insert/opentelemetry"
+          tls { insecure = true }
+        }
+      }
+
+  # ── Grafana datasource provisioning ─────────────────────────────────────────
+  # VictoriaTraces is NOT pre-provisioned (v0.8.x pre-release; Grafana plugin
+  # not yet published). Add manually via the Grafana UI once traces are flowing.
+  - path: /opt/grafana/provisioning/datasources/obs.yaml
+    content: |
+      apiVersion: 1
+      datasources:
+        - name: VictoriaMetrics
+          type: prometheus
+          uid: prometheus
+          url: http://127.0.0.1:8428
+          access: proxy
+          isDefault: true
+          editable: false
+          jsonData:
+            httpMethod: POST
+
+        - name: VictoriaLogs
+          type: victoriametrics-logs-datasource
+          uid: victorialogs
+          url: http://127.0.0.1:9428
+          access: proxy
+          isDefault: false
+          editable: false
+
+  # ── Grafana dashboard provisioning ───────────────────────────────────────────
+  - path: /opt/grafana/provisioning/dashboards/single-node.yaml
+    content: |
+      apiVersion: 1
+      providers:
+        - name: abc-node
+          orgId: 1
+          folder: abc-node
+          folderUid: abc-node
+          type: file
+          disableDeletion: false
+          updateIntervalSeconds: 60
+          allowUiUpdates: true
+          options:
+            path: /etc/grafana/dashboards
+
+  # ── Grafana dashboard: abc-node Overview ─────────────────────────────────
+  # Panels: Nomad allocations (running/pending/failed), host CPU, host memory,
+  # host disk (rootfs), and per-service health (up/down).
+  # All queries target the VictoriaMetrics (prometheus) datasource.
+  - path: /opt/grafana/dashboards/abc-node-overview.json
+    content: |
+      {
+        "title": "abc-node Overview",
+        "uid": "abc-node-overview",
+        "schemaVersion": 39,
+        "version": 1,
+        "refresh": "30s",
+        "time": { "from": "now-1h", "to": "now" },
+        "templating": { "list": [] },
+        "annotations": { "list": [] },
+        "panels": [
+          {
+            "id": 1,
+            "type": "row",
+            "title": "Nomad",
+            "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 },
+            "collapsed": false
+          },
+          {
+            "id": 2,
+            "type": "stat",
+            "title": "Running Allocations",
+            "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+            "fieldConfig": {
+              "defaults": {
+                "thresholds": { "mode": "absolute", "steps": [
+                  { "color": "green", "value": null }, { "color": "yellow", "value": 0 }
+                ]},
+                "color": { "mode": "thresholds" }, "unit": "short"
+              }
+            },
+            "targets": [{ "expr": "sum(nomad_client_allocs_running)", "legendFormat": "running", "datasource": { "uid": "prometheus" } }]
+          },
+          {
+            "id": 3,
+            "type": "stat",
+            "title": "Pending Allocations",
+            "gridPos": { "x": 4, "y": 1, "w": 4, "h": 4 },
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+            "fieldConfig": {
+              "defaults": {
+                "thresholds": { "mode": "absolute", "steps": [
+                  { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "orange", "value": 5 }
+                ]},
+                "color": { "mode": "thresholds" }, "unit": "short"
+              }
+            },
+            "targets": [{ "expr": "sum(nomad_client_allocs_pending)", "legendFormat": "pending", "datasource": { "uid": "prometheus" } }]
+          },
+          {
+            "id": 4,
+            "type": "stat",
+            "title": "Failed Allocations",
+            "gridPos": { "x": 8, "y": 1, "w": 4, "h": 4 },
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+            "fieldConfig": {
+              "defaults": {
+                "thresholds": { "mode": "absolute", "steps": [
+                  { "color": "green", "value": null }, { "color": "red", "value": 1 }
+                ]},
+                "color": { "mode": "thresholds" }, "unit": "short"
+              }
+            },
+            "targets": [{ "expr": "sum(nomad_client_allocs_failed)", "legendFormat": "failed", "datasource": { "uid": "prometheus" } }]
+          },
+          {
+            "id": 5,
+            "type": "stat",
+            "title": "Nomad Client Node",
+            "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "options": { "colorMode": "background", "graphMode": "none", "textMode": "value_and_name" },
+            "fieldConfig": {
+              "defaults": {
+                "thresholds": { "mode": "absolute", "steps": [
+                  { "color": "red", "value": null }, { "color": "green", "value": 1 }
+                ]},
+                "color": { "mode": "thresholds" }, "unit": "short"
+              }
+            },
+            "targets": [{ "expr": "count(nomad_client_uptime_seconds)", "legendFormat": "nodes up", "datasource": { "uid": "prometheus" } }]
+          },
+          {
+            "id": 6,
+            "type": "row",
+            "title": "Host Resources",
+            "gridPos": { "x": 0, "y": 5, "w": 24, "h": 1 },
+            "collapsed": false
+          },
+          {
+            "id": 7,
+            "type": "timeseries",
+            "title": "CPU Usage %",
+            "gridPos": { "x": 0, "y": 6, "w": 8, "h": 8 },
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent",
+                "min": 0, "max": 100,
+                "thresholds": { "mode": "absolute", "steps": [
+                  { "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }
+                ]},
+                "color": { "mode": "palette-classic" }
+              }
+            },
+            "targets": [{
+              "expr": "100 - (avg by(job) (rate(node_cpu_seconds_total{mode=\"idle\",job=\"node\"}[2m])) * 100)",
+              "legendFormat": "cpu %", "datasource": { "uid": "prometheus" }
+            }]
+          },
+          {
+            "id": 8,
+            "type": "timeseries",
+            "title": "Memory Usage %",
+            "gridPos": { "x": 8, "y": 6, "w": 8, "h": 8 },
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent",
+                "min": 0, "max": 100,
+                "thresholds": { "mode": "absolute", "steps": [
+                  { "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 85 }
+                ]},
+                "color": { "mode": "palette-classic" }
+              }
+            },
+            "targets": [{
+              "expr": "(1 - node_memory_MemAvailable_bytes{job=\"node\"} / node_memory_MemTotal_bytes{job=\"node\"}) * 100",
+              "legendFormat": "mem %", "datasource": { "uid": "prometheus" }
+            }]
+          },
+          {
+            "id": 9,
+            "type": "timeseries",
+            "title": "Root Disk Usage %",
+            "gridPos": { "x": 16, "y": 6, "w": 8, "h": 8 },
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent",
+                "min": 0, "max": 100,
+                "thresholds": { "mode": "absolute", "steps": [
+                  { "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 85 }
+                ]},
+                "color": { "mode": "palette-classic" }
+              }
+            },
+            "targets": [{
+              "expr": "(1 - node_filesystem_avail_bytes{job=\"node\",mountpoint=\"/\",fstype!=\"tmpfs\"} / node_filesystem_size_bytes{job=\"node\",mountpoint=\"/\",fstype!=\"tmpfs\"}) * 100",
+              "legendFormat": "disk % (/)", "datasource": { "uid": "prometheus" }
+            }]
+          },
+          {
+            "id": 10,
+            "type": "row",
+            "title": "Service Health",
+            "gridPos": { "x": 0, "y": 14, "w": 24, "h": 1 },
+            "collapsed": false
+          },
+          {
+            "id": 11,
+            "type": "stat",
+            "title": "VictoriaMetrics",
+            "gridPos": { "x": 0, "y": 15, "w": 4, "h": 3 },
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+            "fieldConfig": {
+              "defaults": {
+                "mappings": [{ "type": "value", "options": { "1": { "text": "UP", "color": "green" }, "0": { "text": "DOWN", "color": "red" } } }],
+                "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] },
+                "color": { "mode": "thresholds" }
+              }
+            },
+            "targets": [{ "expr": "up{job=\"victoriametrics\"}", "legendFormat": "", "datasource": { "uid": "prometheus" } }]
+          },
+          {
+            "id": 12,
+            "type": "stat",
+            "title": "VictoriaLogs",
+            "gridPos": { "x": 4, "y": 15, "w": 4, "h": 3 },
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+            "fieldConfig": {
+              "defaults": {
+                "mappings": [{ "type": "value", "options": { "1": { "text": "UP", "color": "green" }, "0": { "text": "DOWN", "color": "red" } } }],
+                "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] },
+                "color": { "mode": "thresholds" }
+              }
+            },
+            "targets": [{ "expr": "up{job=\"victorialogs\"}", "legendFormat": "", "datasource": { "uid": "prometheus" } }]
+          },
+          {
+            "id": 13,
+            "type": "stat",
+            "title": "Nomad",
+            "gridPos": { "x": 8, "y": 15, "w": 4, "h": 3 },
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+            "fieldConfig": {
+              "defaults": {
+                "mappings": [{ "type": "value", "options": { "1": { "text": "UP", "color": "green" }, "0": { "text": "DOWN", "color": "red" } } }],
+                "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] },
+                "color": { "mode": "thresholds" }
+              }
+            },
+            "targets": [{ "expr": "up{job=\"nomad\"}", "legendFormat": "", "datasource": { "uid": "prometheus" } }]
+          },
+          {
+            "id": 14,
+            "type": "stat",
+            "title": "Grafana Alloy",
+            "gridPos": { "x": 12, "y": 15, "w": 4, "h": 3 },
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+            "fieldConfig": {
+              "defaults": {
+                "mappings": [{ "type": "value", "options": { "1": { "text": "UP", "color": "green" }, "0": { "text": "DOWN", "color": "red" } } }],
+                "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] },
+                "color": { "mode": "thresholds" }
+              }
+            },
+            "targets": [{ "expr": "up{job=\"alloy\"}", "legendFormat": "", "datasource": { "uid": "prometheus" } }]
+          }
+        ]
+      }
+
+  # ── systemd: victoriametrics ─────────────────────────────────────────────────
+  - path: /etc/systemd/system/victoriametrics.service
+    content: |
+      [Unit]
+      Description=VictoriaMetrics (abc-node observability)
+      After=docker.service network-online.target
+      Requires=docker.service
+
+      [Service]
+      ExecStartPre=-/usr/bin/docker rm -f victoriametrics
+      ExecStart=/usr/bin/docker run \
+        --name victoriametrics \
+        --network host \
+        -v /data/victoriametrics:/storage \
+        -v /opt/victoriametrics/promscrape.yaml:/etc/promscrape.yaml:ro \
+        victoriametrics/victoria-metrics:v1.115.0 \
+        -storageDataPath=/storage \
+        -retentionPeriod=30d \
+        -promscrape.config=/etc/promscrape.yaml \
+        -httpListenAddr=:8428
+      ExecStop=-/usr/bin/docker stop victoriametrics
+      ExecStopPost=-/usr/bin/docker rm -f victoriametrics
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # ── systemd: victorialogs ────────────────────────────────────────────────────
+  - path: /etc/systemd/system/victorialogs.service
+    content: |
+      [Unit]
+      Description=VictoriaLogs (abc-node observability)
+      After=docker.service network-online.target
+      Requires=docker.service
+
+      [Service]
+      ExecStartPre=-/usr/bin/docker rm -f victorialogs
+      ExecStart=/usr/bin/docker run \
+        --name victorialogs \
+        --network host \
+        -v /data/victorialogs:/storage \
+        victoriametrics/victoria-logs:v1.50.0 \
+        -storageDataPath=/storage \
+        -retentionPeriod=30d \
+        -httpListenAddr=:9428
+      ExecStop=-/usr/bin/docker stop victorialogs
+      ExecStopPost=-/usr/bin/docker rm -f victorialogs
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # ── systemd: victoriametrics-traces ──────────────────────────────────────────
+  # VictoriaTraces v0.8.x — pre-release distributed tracing backend.
+  # OTLP HTTP:  POST http://<vm-ip>:10428/insert/opentelemetry/v1/traces
+  # OTLP gRPC:  host:4317 (shared with Alloy receiver — Alloy listens on :4317
+  #             and forwards inbound spans to VictoriaTraces on :10428)
+  # Health:     GET http://<vm-ip>:10428/health
+  # UI:         http://<vm-ip>:10428
+  - path: /etc/systemd/system/victoriametrics-traces.service
+    content: |
+      [Unit]
+      Description=VictoriaTraces (abc-node distributed tracing)
+      After=docker.service network-online.target
+      Requires=docker.service
+
+      [Service]
+      ExecStartPre=-/usr/bin/docker rm -f victoriatraces
+      ExecStart=/usr/bin/docker run \
+        --name victoriatraces \
+        --network host \
+        -v /data/victoriatraces:/storage \
+        victoriametrics/victoria-traces:v0.8.2 \
+        -storageDataPath=/storage \
+        -retentionPeriod=14d \
+        -httpListenAddr=:10428
+      ExecStop=-/usr/bin/docker stop victoriatraces
+      ExecStopPost=-/usr/bin/docker rm -f victoriatraces
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # ── systemd: grafana ─────────────────────────────────────────────────────────
+  # Plugin (victoriametrics-logs-datasource) is pre-downloaded to
+  # /data/grafana/plugins/ during runcmd — no GF_INSTALL_PLUGINS network call
+  # at container start. GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS is required
+  # because the VM Labs plugin is not signed.
+  - path: /etc/systemd/system/grafana.service
+    content: |
+      [Unit]
+      Description=Grafana (abc-node observability)
+      After=docker.service victoriametrics.service victorialogs.service
+      Requires=docker.service
+
+      [Service]
+      ExecStartPre=-/usr/bin/docker rm -f grafana
+      ExecStart=/usr/bin/docker run \
+        --name grafana \
+        --network host \
+        -v /data/grafana:/var/lib/grafana \
+        -v /opt/grafana/provisioning:/etc/grafana/provisioning:ro \
+        -v /opt/grafana/dashboards:/etc/grafana/dashboards:ro \
+        -e GF_SECURITY_ADMIN_PASSWORD=admin \
+        -e GF_AUTH_ANONYMOUS_ENABLED=true \
+        -e GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer \
+        -e GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=victoriametrics-logs-datasource \
+        -e GF_PATHS_PROVISIONING=/etc/grafana/provisioning \
+        grafana/grafana:11.4.0
+      ExecStop=-/usr/bin/docker stop grafana
+      ExecStopPost=-/usr/bin/docker rm -f grafana
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # ── systemd: alloy ────────────────────────────────────────────────────────────
+  - path: /etc/systemd/system/alloy.service
+    content: |
+      [Unit]
+      Description=Grafana Alloy (abc-node observability agent)
+      After=victoriametrics.service victorialogs.service victoriametrics-traces.service nomad.service
+      Wants=nomad.service
+
+      [Service]
+      ExecStart=/opt/alloy/alloy run \
+        /opt/alloy/config.alloy \
+        --server.http.listen-addr=0.0.0.0:12345 \
+        --storage.path=/opt/alloy/data
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # ── Create data + provisioning directories ────────────────────────────────
+  - mkdir -p /data/victoriametrics /data/victorialogs /data/victoriatraces
+  - mkdir -p /data/grafana/plugins
+  - mkdir -p /opt/victoriametrics /opt/alloy/data
+  - mkdir -p /opt/grafana/provisioning/datasources
+  - mkdir -p /opt/grafana/provisioning/dashboards
+  - mkdir -p /opt/grafana/dashboards
+
+  # ── Pre-download victoriametrics-logs-datasource plugin ───────────────────
+  # Downloaded to /data/grafana/plugins/ which is mounted as /var/lib/grafana
+  # inside the container. Avoids unreliable GF_INSTALL_PLUGINS network call
+  # at container start time.
+  - wget -q https://github.com/VictoriaMetrics/victoriametrics-logs-datasource/releases/download/v0.11.0/victoriametrics-logs-datasource-v0.11.0.zip -O /tmp/vm-logs-plugin.zip
+  - unzip -o /tmp/vm-logs-plugin.zip -d /data/grafana/plugins/
+  - rm /tmp/vm-logs-plugin.zip
+
+  # Grafana container runs as UID 472 — set after all files are written
+  - chown -R 472:472 /data/grafana
+
+  # ── Pull Docker images (avoids first-start delay) ──────────────────────────
+  - docker pull victoriametrics/victoria-metrics:v1.115.0
+  - docker pull victoriametrics/victoria-logs:v1.50.0
+  - docker pull victoriametrics/victoria-traces:v0.8.2
+  - docker pull grafana/grafana:11.4.0
+
+  # ── Download Alloy binary ──────────────────────────────────────────────────
+  - wget -q https://github.com/grafana/alloy/releases/download/v1.15.1/alloy-linux-amd64.zip -O /tmp/alloy.zip
+  - unzip -o /tmp/alloy.zip alloy-linux-amd64 -d /opt/alloy/
+  - mv /opt/alloy/alloy-linux-amd64 /opt/alloy/alloy
+  - chmod +x /opt/alloy/alloy
+  - rm /tmp/alloy.zip
+
+  # ── Enable + start observability stack ────────────────────────────────────
+  - systemctl daemon-reload
+  - systemctl enable victoriametrics.service victorialogs.service victoriametrics-traces.service
+  - systemctl enable grafana.service alloy.service
+  - systemctl start victoriametrics.service victorialogs.service victoriametrics-traces.service
+  - systemctl start grafana.service alloy.service

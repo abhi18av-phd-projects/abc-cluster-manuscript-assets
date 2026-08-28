@@ -1,0 +1,17 @@
+{
+  "name": "single-node-server-worker",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@pulumi/multipass": "file:../../sdk/nodejs",
+    "@pulumi/pulumi": "^3.0.0",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^18",
+    "typescript": "^5.0.0"
+  }
+}

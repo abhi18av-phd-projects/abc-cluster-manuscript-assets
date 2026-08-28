@@ -1,0 +1,76 @@
+#cloud-config
+# Software-environment tooling addon for abc-node.
+# Merged in by index.ts when `pulumi config set enableEnvTools true` (default on).
+#
+# WHY THIS EXISTS
+#   `abc job run` declares its software environment in the script preamble:
+#       #ABC --runtime=pixi       --from-file=pixi.lock
+#       #ABC --runtime=micromamba --from-file=environment.yml
+#   The generated task fetches the provisioner from the context's tools endpoint:
+#       <tools-endpoint>/abc-reserved/binary_tools/pixi-<kernel>-<arch>
+#   A stock deployment serves nothing at that path, so the CLI refuses with
+#       pixi local mode: no tools endpoint configured for pixi binary download
+#   and lockfile-based reproducibility cannot be exercised at all.
+#
+# WHAT THIS ADDS
+#   - pixi and micromamba binaries on the host
+#   - the same binaries published into MinIO under the layout the CLI expects,
+#     so `--runtime=pixi` and `--runtime=micromamba` resolve locally
+#
+# The context must then point at this endpoint:
+#   contexts.<name>.admin.tools.endpoint: http://<ip>:9000
+
+bootcmd:
+  - mkdir -p /opt/abc/tools
+
+runcmd:
+
+  # ── pixi ────────────────────────────────────────────────────────────────────
+  - |
+    PIXI_VERSION=v0.41.4
+    curl -fsSL -o /opt/abc/tools/pixi \
+      "https://github.com/prefix-dev/pixi/releases/download/${PIXI_VERSION}/pixi-x86_64-unknown-linux-musl" \
+      && chmod +x /opt/abc/tools/pixi \
+      && install -m 0755 /opt/abc/tools/pixi /usr/local/bin/pixi \
+      || echo "WARNING: pixi download failed; --runtime=pixi will not work" >&2
+
+  # ── micromamba ──────────────────────────────────────────────────────────────
+  - |
+    # Direct binary, not the .tar.bz2 API: the base image ships no bzip2, so
+    # tar's decompressor child fails with "Error is not recoverable".
+    curl -fsSL -o /opt/abc/tools/micromamba \
+      "https://github.com/mamba-org/micromamba-releases/releases/latest/download/micromamba-linux-64" \
+      && chmod +x /opt/abc/tools/micromamba \
+      && install -m 0755 /opt/abc/tools/micromamba /usr/local/bin/micromamba \
+      || echo "WARNING: micromamba download failed; --runtime=micromamba will not work" >&2
+
+  # ── publish into MinIO at the path the CLI fetches from ─────────────────────
+  # Layout: abc-reserved/binary_tools/<tool>-<kernel>-<arch>
+  # <kernel> and <arch> come from uname on the task, so linux-x86_64 here.
+  - |
+    for i in $(seq 1 30); do
+      curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1 && break
+      sleep 2
+    done
+    export MC_HOST_local="http://minioadmin:minioadmin@127.0.0.1:9000"
+    curl -fsSL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc \
+      && chmod +x /usr/local/bin/mc || { echo "ERROR: mc download failed" >&2; exit 0; }
+    mc mb --ignore-existing local/abc-reserved
+    mc anonymous set download local/abc-reserved
+    K=$(uname -s | tr '[:upper:]' '[:lower:]')
+    A=$(uname -m)
+    # The CLI normalises the arch before building the URL, so publish under the
+    # same names or the task 404s: x86_64 -> amd64, aarch64 -> arm64.
+    case "$A" in x86_64) A=amd64 ;; aarch64) A=arm64 ;; esac
+    for t in pixi micromamba; do
+      if [ -x "/opt/abc/tools/$t" ]; then
+        mc cp "/opt/abc/tools/$t" "local/abc-reserved/binary_tools/$t-$K-$A" \
+          && echo "published $t-$K-$A"
+      fi
+    done
+
+  # ── report what a context needs to point at ─────────────────────────────────
+  - |
+    IP=$(hostname -I | awk '{print $1}')
+    echo "tools endpoint for this deployment: http://${IP}:9000"
+    echo "  set contexts.<name>.admin.tools.endpoint to that value"

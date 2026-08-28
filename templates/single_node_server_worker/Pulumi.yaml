@@ -1,0 +1,3 @@
+name: single-node-server-worker
+runtime: nodejs
+description: abc-node single-node — MinIO + tusd + fx-tusd-hook as systemd services, HTTPS via Caddy

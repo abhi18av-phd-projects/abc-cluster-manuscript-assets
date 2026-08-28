@@ -95,10 +95,11 @@ curl -fsSL -H "Accept: application/vnd.github.raw+json" \
 ```
 
 The CLI is configured by importing a context file rather than by assembling one
-flag by flag. The template writes a ready-to-use context to `abc-context.yaml`
-in the stack directory, so import it and confirm:
+flag by flag. The template emits one as a stack output, so write it out and
+import it:
 
 ```bash
+pulumi stack output abcContext --show-secrets > abc-context.yaml
 abc auth context add lab --from-file ./abc-context.yaml
 abc auth context use lab
 abc auth context show
@@ -127,7 +128,11 @@ Then an annotated script of your own, and a pipeline:
 
 ```bash
 abc job run hello.sh
-abc pipeline run https://github.com/nf-core/rnaseq --revision 3.14.0
+# A pipeline needs two flags on a single-node deployment; see templates/README.md
+abc pipeline run https://github.com/nf-core/demo --revision 1.2.0 --profile test \
+  --head-pool compute \
+  --head-nomad-addr http://<node-ip>:4646 \
+  --work-dir s3://nf-work/demo/ --param outdir=s3://nf-work/demo-results/
 ```
 
 Follow a running job with `abc job logs <job-id> --follow`. Inspect it with

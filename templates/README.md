@@ -6,8 +6,8 @@ substituted before deploying.
 
 | Template | Identifier in the manuscript | Nomad mode | Access control | Users |
 |---|---|---|---|---|
-| `single-node/` | `single_node_server_worker` | development, no persistence | none | 1 |
-| `single-server-with-workers/` | `single_server_with_workers` | server and client, persistent | enabled | 2–20 |
+| `single_node_server_worker/` | `single_node_server_worker` | development, no persistence | none | 1 |
+| `single_server_with_workers/` | `single_server_with_workers` | server and client, persistent | enabled | 2–20 |
 
 Each is a standard Pulumi TypeScript project: `npm install && pulumi up`. Dependencies are
 declared in `package.json`; no `node_modules` or lockfile state ships here. See
@@ -17,13 +17,15 @@ install the Multipass provider while its
 
 ## What differs between them
 
-`single-node/` runs Nomad in development mode on one VM. There is no persistence and no
-access-control enforcement, so any client that can reach the API port holds full cluster
-control. It is a single fault domain, and it is the right choice for evaluating the platform and
-for reproducing the worked example. It is not intended for sustained use.
+`single_node_server_worker/` runs Nomad in development mode on one VM, managed by systemd
+alongside the platform services it needs: MinIO for object storage, tusd for resumable
+ingestion, and optionally Caddy for HTTPS. Nomad itself has no access-control enforcement in
+this mode, so any client that can reach the API port holds full cluster control. It is a single
+fault domain, and it is the right choice for evaluating the platform and for reproducing the
+worked example. It is not intended for sustained use.
 
-`single-server-with-workers/` runs a server VM alongside worker VMs, with persistence and
-per-user access control, and deploys `abc-auth-svc` to broker the single login. `single-node/`
+`single_server_with_workers/` runs a server VM alongside worker VMs, with persistence and
+per-user access control, and deploys `abc-auth-svc` to broker the single login. `single_node_server_worker/`
 does not deploy the broker, because there is no access control to broker.
 
 The overlay network is configurable between Tailscale and Nebula. The platform depends only on

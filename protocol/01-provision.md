@@ -47,7 +47,7 @@ fault domain, suitable for evaluating the platform and for the worked example. N
 use.
 
 ```bash
-cd templates/single-node
+cd templates/single_node_server_worker
 npm install
 pulumi stack init eval
 pulumi up
@@ -61,7 +61,7 @@ One server VM running Nomad server and client, plus N worker VMs. Persistence an
 access control are enabled, and `abc-auth-svc` brokers the single login.
 
 ```bash
-cd templates/single-server-with-workers
+cd templates/single_server_with_workers
 npm install
 pulumi stack init lab
 pulumi config set workerCount 2

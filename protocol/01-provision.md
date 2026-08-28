@@ -92,31 +92,53 @@ failure here is a failure of the paper's description, not only of your deploymen
 ```bash
 curl -fsSL -H "Accept: application/vnd.github.raw+json" \
   "https://api.github.com/repos/abc-cluster/abc-cluster-cli/contents/scripts/install-abc.sh?ref=main" | sh
-
-abc config init
-abc auth context add eval --address <nomad-endpoint> --access-token <token> --workspace default
-abc auth context use eval
-abc cluster doctor
 ```
 
-`abc cluster doctor` is the single check that the platform is serviceable end to end. Proceed to
-[Run](02-run-workload.md) once it passes.
+The CLI is configured by importing a context file rather than by assembling one
+flag by flag. The template writes a ready-to-use context to `abc-context.yaml`
+in the stack directory, so import it and confirm:
+
+```bash
+abc auth context add lab --from-file ./abc-context.yaml
+abc auth context use lab
+abc auth context show
+```
+
+`abc doctor` is the single check that the platform is serviceable end to end. It
+verifies config, connectivity and a probe job:
+
+```bash
+abc doctor            # config + connectivity + probe job
+abc doctor --skip-job # config + connectivity only
+```
+
+Proceed to [Run](02-run-workload.md) once every check passes.
 
 ## Local testing of each workload class
 
-Confirm all three classes before running the worked example.
+Confirm the classes before running the worked example. The built-in
+`hello-cluster` workload needs no script file:
 
 ```bash
-# batch: annotated shell job
-abc job run hello.sh --submit --watch
+abc job run hello-cluster
+```
 
-# batch: pipeline at a pinned revision
+Then an annotated script of your own, and a pipeline:
+
+```bash
+abc job run hello.sh
 abc pipeline run https://github.com/nf-core/rnaseq --revision 3.14.0
+```
 
-# interactive: browser notebook, one credential
+Follow a running job with `abc job logs <job-id> --follow`. Inspect it with
+`abc job show <job-id>`.
+
+Interactive sessions and published applications are exercised on
+`single_server_with_workers` rather than here, since the single-node template
+does not provision the notebook environment:
+
+```bash
 abc workbench start && abc workbench url
-
-# data-app: publish a long-running browser application
 abc app deploy <app-dir> --plane private && abc app list
 ```
 

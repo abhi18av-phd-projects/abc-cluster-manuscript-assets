@@ -28,6 +28,11 @@ worked example. It is not intended for sustained use.
 per-user access control, and deploys `abc-auth-svc` to broker the single login. `single_node_server_worker/`
 does not deploy the broker, because there is no access control to broker.
 
+`single_server_with_workers/` also carries the optional observability stack: metrics, logs and
+traces collection with a dashboard, plus threshold alerts routed to a notification service. It is
+disabled by default and enabled with a single Pulumi config flag, matching the manuscript's
+description of it as an operator option rather than a requirement.
+
 The overlay network is configurable between Tailscale and Nebula. The platform depends only on
 the flat addressing an overlay provides, not on any feature particular to either.
 
@@ -37,7 +42,7 @@ A multi-server quorum topology is possible and is deliberately absent here. Quor
 election, split-brain recovery and coordinated rolling upgrades, and those presume
 platform-engineering capacity the target setting does not have.
 
-Nothing here provisions an HPC bridge, an admission engine, a policy engine or an audit ledger.
+Nothing here provisions an admission engine, a policy engine or an audit ledger.
 The manuscript records their absence as a design decision, and this repository holds that line.
 
 ## A note on JupyterHub

@@ -1,0 +1,19 @@
+version: "1.0"
+name: mtbseq-90-multiqc
+project: <your-group>          # the group you deploy as
+
+# Build and push this image yourself; there is no source-based build path:
+#   docker build -t <registry>/mtbseq-90-multiqc:1.0 .
+#   docker push  <registry>/mtbseq-90-multiqc:1.0
+image: <registry>/mtbseq-90-multiqc:1.0
+
+framework: static              # requires abc-cluster-cli with PR #54
+port: 8080                     # nginx-unprivileged listens here
+health: /
+
+access: team
+expose: [private]              # private | shared | public
+
+resources:
+  cpu: 200                     # MHz — a static server needs very little
+  memory: 128                  # MiB

@@ -49,6 +49,12 @@ what it delivers. This repository holds that line, so nothing here provisions:
 
 If you are looking for those, they belong to work reported separately.
 
+## Apps
+
+| App | What it is |
+|---|---|
+| [`apps/mtbseq-90-multiqc/`](apps/mtbseq-90-multiqc/) | the MultiQC report from the 90-sample MTBseq-nf run, deployed as a static app — the manuscript's data-app example |
+
 ## Relationship to the platform repositories
 
 | Repository | What it holds |

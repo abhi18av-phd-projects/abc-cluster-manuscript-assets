@@ -42,7 +42,8 @@ resolves without the `--server` flag.
 
 ## Topology A — single-node
 
-One VM, Nomad in development mode, no persistence and no access-control enforcement. A single
+One VM, Nomad in development mode as a combined server and client, with no access-control
+enforcement. A single
 fault domain, suitable for evaluating the platform and for the worked example. Not for sustained
 use.
 

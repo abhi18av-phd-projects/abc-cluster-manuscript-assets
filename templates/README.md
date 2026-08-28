@@ -6,7 +6,7 @@ substituted before deploying.
 
 | Template | Identifier in the manuscript | Nomad mode | Access control | Users |
 |---|---|---|---|---|
-| `single_node_server_worker/` | `single_node_server_worker` | development, no persistence | none | 1 |
+| `single_node_server_worker/` | `single_node_server_worker` | development, combined server and client | none | 1 |
 | `single_server_with_workers/` | `single_server_with_workers` | server and client, persistent | enabled | 2–20 |
 
 Each is a standard Pulumi TypeScript project: `npm install && pulumi up`. Dependencies are

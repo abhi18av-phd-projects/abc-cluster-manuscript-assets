@@ -243,6 +243,12 @@ contexts:
       services:
         nomad:
           addr: http://${abcNode.ipv4}:4646
+          # Without these the CLI falls back to build-time defaults —
+          # "platform" for a pipeline head, "default" for an app — and neither
+          # pool exists on a single node, so every submission fails placement
+          # until --head-pool / --node-pool are discovered.
+          head_pool: compute
+          worker_pool: compute
         minio:
           access_key: minioadmin
           secret_key: minioadmin

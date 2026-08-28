@@ -128,11 +128,13 @@ Then an annotated script of your own, and a pipeline:
 
 ```bash
 abc job run hello.sh
-# A pipeline needs two flags on a single-node deployment; see templates/README.md
+# The imported context already pins the node pools, so no --head-pool needed.
 abc pipeline run https://github.com/nf-core/demo --revision 1.2.0 --profile test \
-  --head-pool compute \
   --head-nomad-addr http://<node-ip>:4646 \
   --work-dir s3://nf-work/demo/ --param outdir=s3://nf-work/demo-results/
+
+# Publish a local HTML file as a static app — no image, no registry
+abc app deploy
 ```
 
 Follow a running job with `abc job logs <job-id> --follow`. Inspect it with

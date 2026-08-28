@@ -45,6 +45,18 @@ runcmd:
     done
     NOMAD_ADDR=http://127.0.0.1:4646 nomad node pool apply /opt/nomad/pools/compute.nomad.hcl
 
+  # Namespaces the CLI targets. `abc app deploy` submits into abc-apps, which
+  # a stock deployment does not have, so the first app deploy fails with
+  #     job "..." is in nonexistent namespace "abc-apps"
+  - |
+    for i in $(seq 1 30); do
+      curl -sf http://127.0.0.1:4646/v1/status/leader >/dev/null 2>&1 && break
+      sleep 3
+    done
+    NOMAD_ADDR=http://127.0.0.1:4646 nomad namespace apply \
+      -description "Scientific web apps deployed with abc app" abc-apps \
+      && echo "namespace abc-apps ready"
+
   - systemctl restart nomad.service
 
   # Wait for the client to re-register in `compute` before anything is submitted.

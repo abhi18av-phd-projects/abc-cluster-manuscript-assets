@@ -58,9 +58,11 @@ task requests `Cores 2 / MemoryMB 12288`, because nf-core's `base.config` gives
 every pipeline task fails placement with
 `Dimension "memory" exhausted on 1 nodes`.
 
-Capping this with a `-c` resourceLimits file does **not** help unless that file
-is readable inside the head container. A path on your own workstation is
-silently ignored.
+Capping this with `--config` is less reliable than it looks. The file's contents
+do reach the head — the CLI reads it locally and appends it to the generated
+`nextflow.headjob.config` — but an nf-core pipeline sets `resourceLimits` in its
+own `conf/base.config` and test profile, and that wins. Size the node for the
+pipeline's declared requests rather than trying to cap them from outside.
 
 ## Running a pipeline
 

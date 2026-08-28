@@ -1,0 +1,16 @@
+{
+  "title": "ABC-cluster manuscript assets",
+  "upload_type": "software",
+  "license": "Apache-2.0",
+  "description": "Deployment templates and a reviewer protocol for ABC-cluster, a command-line platform delivering batch pipeline execution, interactive analysis and data-app hosting on commodity, heterogeneous and intermittently connected hardware. Companion artefact to the ABC-cluster manuscript.",
+  "keywords": [
+    "bioinformatics",
+    "genomic surveillance",
+    "HashiCorp Nomad",
+    "Nextflow",
+    "reproducibility",
+    "low-resource settings",
+    "infrastructure as code"
+  ],
+  "access_right": "open"
+}

@@ -2,18 +2,20 @@ version: "1.0"
 name: mtbseq-90-multiqc
 project: <your-group>          # the group you deploy as
 
-# Build and push this image yourself; there is no source-based build path:
-#   docker build -t <registry>/mtbseq-90-multiqc:1.0 .
-#   docker push  <registry>/mtbseq-90-multiqc:1.0
-image: <registry>/mtbseq-90-multiqc:1.0
+framework: static
 
-framework: static              # requires abc-cluster-cli with PR #54
-port: 8080                     # nginx-unprivileged listens here
+# The report itself, published straight from disk. No image, no registry, no
+# Dockerfile: the platform serves these files and Nomad fetches them onto the
+# node before the task starts. A single file is served as index.html.
+# Limit: 100 MiB.
+content: ./multiqc_report.html
+
+port: 8080
 health: /
 
 access: team
 expose: [private]              # private | shared | public
 
 resources:
-  cpu: 200                     # MHz — a static server needs very little
+  cpu: 200                     # MHz — a file server needs very little
   memory: 128                  # MiB

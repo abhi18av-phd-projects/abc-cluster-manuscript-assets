@@ -33,22 +33,6 @@ documents it rather than recommending it, because quorum brings leader election,
 recovery and coordinated rolling upgrades, and those presume the platform-engineering capacity
 the target setting does not have.
 
-## What is deliberately absent
-
-The paper argues that a domain-specific platform is defined as much by what it declines as by
-what it delivers. This repository holds that line, so nothing here provisions:
-
-- **SLURM or PBS bridge clusters.** The manuscript states that bridge drivers for PBS, SLURM,
-  LSF and Torque are deliberately absent, since emulating an HPC scheduler imports an
-  operational model the setting neither needs nor sustains.
-- **Admission control, a policy engine or an audit ledger.** The manuscript records their
-  absence as a decision rather than an omission, on the grounds that each introduces
-  operational machinery the target institution would then have to run.
-- **Identity, workflow or authorisation services** beyond `abc-auth-svc`, which brokers the
-  single login and is recommended at the single-server topology only.
-
-If you are looking for those, they belong to work reported separately.
-
 ## Apps
 
 | App | What it is |

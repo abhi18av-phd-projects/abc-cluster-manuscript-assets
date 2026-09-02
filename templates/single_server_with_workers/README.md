@@ -14,6 +14,30 @@ because it runs Nomad without ACLs.
 - The provider SDK built once: `./scripts/setup-provider-sdk.sh` from the
   repository root (see [../README.md](../README.md) for why)
 
+### If Multipass is installed as a snap
+
+Set `TMPDIR` to a directory the snap can read, and export it in the shell you
+run `pulumi` from:
+
+```bash
+mkdir -p ~/abc-pulumi-tmp && export TMPDIR=~/abc-pulumi-tmp
+```
+
+The Pulumi provider writes each instance's merged cloud-init to a temporary file
+and passes the path to `multipass launch`. Snap confinement grants the snap
+`@{HOME}/[^.]**` — everything under the home directory *except* hidden paths —
+and nothing under `/tmp`. With the default `TMPDIR` every launch fails on:
+
+```
+Could not load cloud-init configuration: bad file: /tmp/multipass-cloudinit-<n>.yaml
+Please ensure that Multipass can read it.
+```
+
+The message points at the file, but the file is fine; it is the location that is
+unreadable. Note the `[^.]` in that rule: a hidden directory such as
+`~/.abc-pulumi-tmp` fails in exactly the same way, so the directory must not
+start with a dot.
+
 ## Deploy
 
 ```bash

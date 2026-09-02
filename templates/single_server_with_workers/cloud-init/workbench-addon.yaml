@@ -161,10 +161,15 @@ write_files:
     \ stage runs before runcmd \u2014 putting them inline delayed\n# the Nomad ACL bootstrap past its\
     \ readiness window and failed the deployment.\nset -uo pipefail\nexport DEBIAN_FRONTEND=noninteractive\n\
     apt-get update -qq >/dev/null 2>&1\napt-get install -y -qq python3-pip sqlite3 >/dev/null 2>&1\n/usr/local/bin/abc-workbench-secrets\
-    \   || echo \"WORKBENCH secrets step failed\"\n/usr/local/bin/abc-install-pocketbase  || echo \"WORKBENCH\
-    \ pocketbase step failed\"\n/usr/local/bin/abc-install-tljh        || echo \"WORKBENCH tljh step failed\"\
-    \n/usr/local/bin/abc-install-authsvc     || echo \"WORKBENCH auth-svc step failed\"\nsystemctl daemon-reload\n\
-    systemctl enable --now abc-pocketbase.service || echo \"WORKBENCH pocketbase service failed\"\n/usr/local/bin/abc-workbench-status\n\
+    \       || echo \"WORKBENCH secrets step failed\"\n/usr/local/bin/abc-workbench-secrets-extra || echo\
+    \ \"WORKBENCH extra-secrets step failed\"\n/usr/local/bin/abc-install-pocketbase      || echo \"WORKBENCH\
+    \ pocketbase step failed\"\n/usr/local/bin/abc-install-tljh            || echo \"WORKBENCH tljh step\
+    \ failed\"\n/usr/local/bin/abc-install-authsvc         || echo \"WORKBENCH auth-svc step failed\"\n\
+    systemctl daemon-reload\nsystemctl enable --now abc-pocketbase.service || echo \"WORKBENCH pocketbase\
+    \ service failed\"\nsystemctl enable --now abc-auth-svc.service || echo \"WORKBENCH auth-svc service\
+    \ failed\"\n# Seed groups, member slots and the reviewer account. Needs\n# PocketBase, the hub and\
+    \ the broker all listening, so it runs last.\nsleep 5\n/usr/local/bin/abc-workbench-seed > /var/log/abc-workbench-seed.log\
+    \ 2>&1 \\\n  || echo \"WORKBENCH seed step failed; see /var/log/abc-workbench-seed.log\"\n/usr/local/bin/abc-workbench-status\n\
     touch /var/lib/abc-workbench-installed\n"
   path: /usr/local/bin/abc-workbench-install
   permissions: '0755'
@@ -225,8 +230,9 @@ write_files:
     \ only at bootstrap time, so\n# the file is re-placed here in case the bootstrap overwrote the directory.\n\
     install -d -m 0755 /data/workbench\ninstall -d -m 0700 /opt/tljh/config/jupyterhub_config.d\nif [\
     \ -f /var/lib/abc-unified-home.py ]; then\n  install -m 0644 /var/lib/abc-unified-home.py \\\n   \
-    \ /opt/tljh/config/jupyterhub_config.d/10-abc-unified-home.py\nfi\nsystemctl restart jupyterhub ||\
-    \ true\necho \"tljh installed\"\n"
+    \ /opt/tljh/config/jupyterhub_config.d/10-abc-unified-home.py\nfi\nif [ -f /var/lib/abc-auth-svc-hub.py\
+    \ ]; then\n  install -m 0644 /var/lib/abc-auth-svc-hub.py \\\n    /opt/tljh/config/jupyterhub_config.d/20-abc-auth-svc.py\n\
+    fi\nsystemctl restart jupyterhub || true\necho \"tljh installed\"\n"
   path: /usr/local/bin/abc-install-tljh
   permissions: '0755'
 - content: "# ABC-cluster unified workbench home (ADR-0064).\n#\n# Each slot has ONE home: /data/workbench/<slot>/home,\
@@ -276,4 +282,191 @@ write_files:
     \ slot_root, home])\n    os.chmod(home, 0o700)\n\n\nc.Spawner.notebook_dir = WORKBENCH_ROOT + \"/{username}/home\"\
     \nc.Spawner.default_url = \"/lab\"\nc.Spawner.pre_spawn_hook = abc_unified_home\n"
   path: /var/lib/abc-unified-home.py
+  permissions: '0644'
+- content: "#!/usr/bin/env python3\n\"\"\"Seed the workbench slot store: groups, one member slot each,\
+    \ and a reviewer.\n\nRuns once, after PocketBase, JupyterHub and abc-auth-svc are up. Group and\n\
+    member names are drawn at random per deployment so no two clusters share\nidentities; the chosen names\
+    \ are printed and written to /run/abc-seed-out.json.\n\nNaming conventions below are load-bearing,\
+    \ and each is asserted by a different\nconsumer:\n\n  PocketBase groups.name    bare, e.g. \"aardvark-transcriptomics\"\
+    . abc-auth-svc\n                            prepends \"su-\" when rendering a slot's CLI config,\n\
+    \                            so storing the prefix here yields \"su-su-...\".\n  Nomad namespace \
+    \          \"su-<group>\"        \u2014 what that config points at.\n  MinIO bucket              \"\
+    su-<group>\"        \u2014 same name as the namespace.\n  Nomad ACL policy          \"su-<group>-member\"\
+    \ \u2014 the \"<ns>-member\" shape. The\n                            identity parser strips it to\
+    \ the bare group name; a\n                            \"member-<ns>\" policy resolves to the right\
+    \ namespace\n                            but leaves the prefix in the reported group label.\n  Nomad\
+    \ token name          \"pool-<slot>\"       \u2014 maps to JupyterHub user\n                     \
+    \       \"<slot>\", which fixes the workbench home directory.\n  slots.state               \"unclaimed\"\
+    \         \u2014 the only state that\n                            POST /slots/claim will act on.\n\
+    \nThe reviewer account is a super-admin: a Nomad *management* token (so\n/auth/me reports groups [\"\
+    *\"] and namespace \"*\"), the MinIO consoleAdmin policy\nplus every group's member policy, and JupyterHub\
+    \ admin rights.\n\"\"\"\nimport json, os, secrets, string, subprocess, sys, time, urllib.error, urllib.request\n\
+    \nPB      = \"http://127.0.0.1:8091\"\nHUB     = \"http://127.0.0.1:15001/hub/api\"\nENVFILE = \"\
+    /etc/abc/workbench.env\"\nOUTFILE = \"/run/abc-seed-out.json\"\n\nANIMALS = [\"kudu\", \"oryx\", \"\
+    caracal\", \"serval\", \"duiker\", \"genet\", \"dassie\",\n           \"aardvark\", \"bontebok\",\
+    \ \"suni\", \"eland\", \"klipspringer\"]\nFIELDS  = [\"genomics\", \"proteomics\", \"phylogenetics\"\
+    , \"metagenomics\",\n           \"epidemiology\", \"virology\", \"microbiome\", \"transcriptomics\"\
+    ]\nNAMES   = [\"thandiwe\", \"sipho\", \"naledi\", \"kagiso\", \"lerato\", \"tebogo\",\n         \
+    \  \"amahle\", \"bongani\", \"zanele\", \"farai\", \"chipo\", \"tinashe\"]\n\nrng = secrets.SystemRandom()\n\
+    \n\ndef envval(key):\n    try:\n        for line in open(ENVFILE):\n            if line.startswith(key\
+    \ + \"=\"):\n                return line.split(\"=\", 1)[1].strip()\n    except OSError:\n       \
+    \ pass\n    return \"\"\n\n\ndef nomad_bootstrap_token():\n    \"\"\"The bootstrap file holds the\
+    \ whole `nomad acl bootstrap` table.\"\"\"\n    raw = open(\"/etc/nomad-bootstrap-token\").read()\n\
+    \    for line in raw.splitlines():\n        if line.strip().startswith(\"Secret ID\"):\n         \
+    \   return line.split(\"=\", 1)[1].strip()\n    return raw.strip()\n\n\ndef sh(cmd, check=True):\n\
+    \    r = subprocess.run(cmd, shell=True, capture_output=True, text=True)\n    if check and r.returncode:\n\
+    \        print(\"  ! \" + cmd.strip().split(\"\\n\")[0][:70], \"->\", r.stderr.strip()[:160])\n  \
+    \  return r.stdout.strip()\n\n\ndef rand(n):\n    return \"\".join(rng.choice(string.ascii_uppercase\
+    \ + string.digits) for _ in range(n))\n\n\ndef pb(path, body=None, method=\"GET\", token=\"\"):\n\
+    \    data = json.dumps(body).encode() if body is not None else None\n    req = urllib.request.Request(PB\
+    \ + path, data=data, method=method,\n        headers={\"Content-Type\": \"application/json\", \"Authorization\"\
+    : token})\n    try:\n        out = urllib.request.urlopen(req, timeout=15).read()\n        return\
+    \ json.loads(out) if out.strip() else {}\n    except urllib.error.HTTPError as e:\n        print(\"\
+    \  ! PB\", method, path, e.code, e.read().decode()[:200])\n        return None\n\n\ndef hub(path,\
+    \ jht, body=None, method=\"POST\"):\n    data = json.dumps(body).encode() if body is not None else\
+    \ None\n    req = urllib.request.Request(HUB + path, data=data, method=method,\n        headers={\"\
+    Authorization\": \"token \" + jht, \"Content-Type\": \"application/json\"})\n    try:\n        return\
+    \ urllib.request.urlopen(req, timeout=15).status\n    except urllib.error.HTTPError as e:\n      \
+    \  return e.code\n\n\ndef pb_superuser_token():\n    \"\"\"Create the PocketBase superuser if absent,\
+    \ then authenticate as it.\n\n    PocketBase rejects abc-auth-svc's built-in default of \"abc-auth@internal\"\
+    \n    as an invalid address, so the deployment pins a reserved-TLD address\n    (RFC 2606) in workbench.env\
+    \ and both sides read it from there.\n    \"\"\"\n    email, password = envval(\"PB_ADMIN_EMAIL\"\
+    ), envval(\"PB_ADMIN_PASSWORD\")\n    if not email:\n        email = \"abc-auth@abc.invalid\"\n  \
+    \      with open(ENVFILE, \"a\") as f:\n            f.write(\"PB_ADMIN_EMAIL=%s\\n\" % email)\n\n\
+    \    def authenticate():\n        body = json.dumps({\"identity\": email, \"password\": password}).encode()\n\
+    \        req = urllib.request.Request(PB + \"/api/collections/_superusers/auth-with-password\",\n\
+    \            data=body, headers={\"Content-Type\": \"application/json\"}, method=\"POST\")\n     \
+    \   try:\n            return json.load(urllib.request.urlopen(req, timeout=15)).get(\"token\", \"\"\
+    )\n        except urllib.error.HTTPError:\n            return \"\"\n\n    tok = authenticate()\n \
+    \   if tok:\n        return tok\n\n    # No superuser yet. `superuser upsert` writes straight into\
+    \ the SQLite file\n    # under the running server and rotates the account's token key, which\n   \
+    \ # invalidates the tokens abc-auth-svc is holding \u2014 so restart both the\n    # store and the\
+    \ broker afterwards rather than only creating the account.\n    sh('/usr/local/bin/pocketbase superuser\
+    \ upsert \"%s\" \"%s\" --dir /opt/abc/pb_data'\n       % (email, password), check=False)\n    sh(\"\
+    systemctl restart abc-pocketbase\", check=False)\n    for _ in range(15):\n        time.sleep(1)\n\
+    \        tok = authenticate()\n        if tok:\n            break\n    sh(\"systemctl restart abc-auth-svc\"\
+    , check=False)\n    time.sleep(3)\n    return tok\n\n\ndef ensure_collections(tok):\n    \"\"\"Create\
+    \ the groups/slots collections abc-auth-svc reads, if absent.\"\"\"\n    have = {c[\"name\"] for c\
+    \ in (pb(\"/api/collections?perPage=200\", token=tok) or {}).get(\"items\", [])}\n    txt = lambda\
+    \ n: {\"name\": n, \"type\": \"text\"}\n    if \"groups\" not in have:\n        g = pb(\"/api/collections\"\
+    , {\"name\": \"groups\", \"type\": \"base\", \"fields\": [\n            {\"name\": \"name\", \"type\"\
+    : \"text\", \"required\": True},\n            txt(\"cred_source_default\"), txt(\"age_recipient\"\
+    ), txt(\"age_sk_wrapped\"),\n            {\"name\": \"age_key_version\", \"type\": \"number\"},\n\
+    \            txt(\"age_key_alg\"), txt(\"kek_wrapped\")]}, \"POST\", tok)\n        print(\"  created\
+    \ collection groups\")\n    else:\n        g = next(c for c in pb(\"/api/collections?perPage=200\"\
+    , token=tok)[\"items\"]\n                 if c[\"name\"] == \"groups\")\n    if \"slots\" not in have:\n\
+    \        pb(\"/api/collections\", {\"name\": \"slots\", \"type\": \"base\", \"fields\": [\n      \
+    \      {\"name\": \"slot_name\", \"type\": \"text\", \"required\": True},\n            {\"name\":\
+    \ \"group\", \"type\": \"relation\", \"maxSelect\": 1,\n             \"collectionId\": g[\"id\"],\
+    \ \"cascadeDelete\": False},\n            txt(\"group_name\"), txt(\"nomad_token_secret\"), txt(\"\
+    nomad_token_accessor\"),\n            txt(\"minio_access_key\"), txt(\"minio_secret_key\"), {\"name\"\
+    : \"state\", \"type\": \"text\"},\n            txt(\"cred_source\"), txt(\"opaque_token_hash\"), {\"\
+    name\": \"config_yaml\", \"type\": \"text\"},\n            txt(\"claim_code\"), txt(\"claimed_by_name\"\
+    ), txt(\"claimed_by_email\"),\n            txt(\"claimed_at\"), txt(\"kek_wrapped\")]}, \"POST\",\
+    \ tok)\n        print(\"  created collection slots\")\n\n\ndef ensure_mc_alias():\n    \"\"\"Point\
+    \ `mc` at this cluster's MinIO as root, in root's own config.\n\n    The Pulumi program configures\
+    \ the alias inside its own command shells; the\n    seed runs from a systemd unit with a different\
+    \ HOME and would otherwise get\n    \"No valid configuration found for 'abc' host alias\" and silently\
+    \ create no\n    MinIO users at all.\n    \"\"\"\n    endpoint = \"\"\n    try:\n        for line\
+    \ in open(\"/etc/abc/workbench-cluster.env\"):\n            if line.startswith(\"CLUSTER_MINIO_ENDPOINT=\"\
+    ):\n                endpoint = line.split(\"=\", 1)[1].strip()\n                break\n    except\
+    \ OSError:\n        pass\n    if not endpoint:\n        print(\"  ! CLUSTER_MINIO_ENDPOINT unset;\
+    \ cannot configure mc alias\")\n        return False\n    user = os.environ.get(\"MINIO_ROOT_USER\"\
+    , \"minioadmin\")\n    pw   = os.environ.get(\"MINIO_ROOT_PASSWORD\", \"minioadmin\")\n    sh(\"mc\
+    \ alias set abc %s %s %s\" % (endpoint, user, pw), check=False)\n    ok = subprocess.run(\"mc admin\
+    \ info abc\", shell=True,\n                        capture_output=True).returncode == 0\n    print(\"\
+    \  mc alias abc -> %s (%s)\" % (endpoint, \"ok\" if ok else \"UNREACHABLE\"))\n    return ok\n\n\n\
+    def main():\n    ngroups = int(os.environ.get(\"ABC_SEED_GROUPS\", \"3\"))\n    os.environ[\"NOMAD_TOKEN\"\
+    ] = nomad_bootstrap_token()\n    os.environ[\"NOMAD_ADDR\"] = \"http://127.0.0.1:4646\"\n    jht =\
+    \ envval(\"JUPYTERHUB_API_TOKEN\")\n    ensure_mc_alias()\n\n    tok = pb_superuser_token()\n    if\
+    \ not tok:\n        print(\"could not authenticate to PocketBase\", file=sys.stderr)\n        return\
+    \ 1\n    ensure_collections(tok)\n\n    # Idempotent: drop records from any previous seed run.\n \
+    \   for coll in (\"slots\", \"groups\"):\n        for rec in (pb(\"/api/collections/%s/records?perPage=200\"\
+    \ % coll, token=tok) or {}).get(\"items\", []):\n            pb(\"/api/collections/%s/records/%s\"\
+    \ % (coll, rec[\"id\"]), None, \"DELETE\", tok)\n\n    animals = rng.sample(ANIMALS, ngroups)\n  \
+    \  fields  = rng.sample(FIELDS, ngroups)\n    members = rng.sample(NAMES, ngroups)\n    bare    =\
+    \ [\"%s-%s\" % (animals[i], fields[i]) for i in range(ngroups)]\n    out     = {\"groups\": [], \"\
+    reviewer\": {}}\n\n    def minio_user(ak, sk, policies):\n        sh(\"mc admin user add abc %s %s\"\
+    \ % (ak, sk), check=False)\n        for p in policies:\n            sh(\"mc admin policy attach abc\
+    \ %s --user %s\" % (p, ak), check=False)\n\n    for i, name in enumerate(bare):\n        member =\
+    \ members[i]\n        ns = bucket = \"su-\" + name\n        print(\"== %s (namespace %s, member %s)\
+    \ ==\" % (name, ns, member))\n\n        sh('nomad namespace apply -description \"group %s\" %s' %\
+    \ (name, ns))\n        pol = \"/tmp/pol-%s.hcl\" % ns\n        open(pol, \"w\").write('namespace \"\
+    %s\" { policy = \"write\" }\\nnode { policy = \"read\" }\\n' % ns)\n        sh('nomad acl policy apply\
+    \ -description \"member %s\" %s-member %s' % (ns, ns, pol))\n\n        sh(\"mc mb --ignore-existing\
+    \ abc/%s\" % bucket, check=False)\n        ip = \"/tmp/iam-%s.json\" % ns\n        open(ip, \"w\"\
+    ).write(json.dumps({\"Version\": \"2012-10-17\", \"Statement\": [\n            {\"Effect\": \"Allow\"\
+    , \"Action\": [\"s3:*\"], \"Resource\": [\"arn:aws:s3:::%s/*\" % bucket]},\n            {\"Effect\"\
+    : \"Allow\", \"Action\": [\"s3:ListBucket\"], \"Resource\": [\"arn:aws:s3:::%s\" % bucket]}]}))\n\
+    \        sh(\"mc admin policy create abc %s-member %s || mc admin policy update abc %s-member %s\"\
+    \n           % (ns, ip, ns, ip), check=False)\n\n        grec = pb(\"/api/collections/groups/records\"\
+    ,\n                  {\"name\": name, \"cred_source_default\": \"local\"}, \"POST\", tok)\n      \
+    \  ak, sk = (\"%s-%s\" % (member, rand(6))).lower(), rand(24)\n        minio_user(ak, sk, [\"%s-member\"\
+    \ % ns])\n        td = json.loads(sh('nomad acl token create -name \"pool-%s\" -policy \"%s-member\"\
+    \ '\n                           '-type=client -json' % (member, ns)) or \"{}\")\n        code = rand(10)\n\
+    \        srec = pb(\"/api/collections/slots/records\", {\n            \"slot_name\": member, \"group\"\
+    : grec[\"id\"] if grec else None, \"group_name\": name,\n            \"minio_access_key\": ak, \"\
+    minio_secret_key\": sk,\n            \"nomad_token_secret\": td.get(\"SecretID\", \"\"),\n       \
+    \     \"nomad_token_accessor\": td.get(\"AccessorID\", \"\"),\n            \"state\": \"unclaimed\"\
+    , \"cred_source\": \"local\", \"claim_code\": code}, \"POST\", tok)\n        if jht:\n           \
+    \ hub(\"/users/\" + member, jht)\n        out[\"groups\"].append({\"group\": name, \"namespace\":\
+    \ ns, \"slot\": member,\n                              \"access_key\": ak, \"secret_key\": sk,\n \
+    \                             \"nomad_token\": td.get(\"SecretID\", \"\"), \"claim_code\": code,\n\
+    \                              \"slot_id\": srec[\"id\"] if srec else None})\n\n    # Reviewer: super-admin,\
+    \ member of every group.\n    rv = \"reviewer\"\n    print(\"== %s (super-admin, member of all %d\
+    \ groups) ==\" % (rv, ngroups))\n    rak, rsk = (\"%s-%s\" % (rv, rand(6))).lower(), rand(24)\n  \
+    \  minio_user(rak, rsk, [\"consoleAdmin\"] + [\"su-%s-member\" % n for n in bare])\n    rtd = json.loads(sh('nomad\
+    \ acl token create -name \"pool-%s\" -type=management -json' % rv) or \"{}\")\n    grec = pb(\"/api/collections/groups/records\"\
+    ,\n              {\"name\": \"reviewers\", \"cred_source_default\": \"local\"}, \"POST\", tok)\n \
+    \   code = rand(10)\n    srec = pb(\"/api/collections/slots/records\", {\n        \"slot_name\": rv,\
+    \ \"group\": grec[\"id\"] if grec else None, \"group_name\": \"reviewers\",\n        \"minio_access_key\"\
+    : rak, \"minio_secret_key\": rsk,\n        \"nomad_token_secret\": rtd.get(\"SecretID\", \"\"),\n\
+    \        \"nomad_token_accessor\": rtd.get(\"AccessorID\", \"\"),\n        \"state\": \"unclaimed\"\
+    , \"cred_source\": \"local\", \"claim_code\": code}, \"POST\", tok)\n    if jht:\n        hub(\"/users/\"\
+    \ + rv, jht)\n    out[\"reviewer\"] = {\"slot\": rv, \"access_key\": rak, \"secret_key\": rsk,\n \
+    \                      \"nomad_token\": rtd.get(\"SecretID\", \"\"), \"groups\": bare,\n         \
+    \              \"claim_code\": code, \"slot_id\": srec[\"id\"] if srec else None}\n\n    json.dump(out,\
+    \ open(OUTFILE, \"w\"), indent=2)\n    os.chmod(OUTFILE, 0o600)\n    print(\"\\nSeeded groups: %s\"\
+    \ % \", \".join(bare))\n    print(\"Seeded slots:  %s\" % \", \".join([g[\"slot\"] for g in out[\"\
+    groups\"]] + [rv]))\n    print(\"Credentials and claim codes: %s (root-only)\" % OUTFILE)\n    return\
+    \ 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+  path: /usr/local/bin/abc-workbench-seed
+  permissions: '0755'
+- content: "#!/bin/bash\n# Secrets the workbench needs beyond the base set: a PocketBase superuser\n#\
+    \ address PocketBase will actually accept, and the JupyterHub API token shared\n# with abc-auth-svc.\
+    \ Both are appended once and then left alone, so a re-run\n# never rotates a live deployment's credentials.\n\
+    set -euo pipefail\ntouch /etc/abc/workbench.env\nchmod 600 /etc/abc/workbench.env\n# abc-auth-svc\
+    \ defaults to \"abc-auth@internal\", which PocketBase rejects as an\n# invalid address. .invalid is\
+    \ the RFC 2606 reserved TLD for exactly this.\ngrep -q '^PB_ADMIN_EMAIL=' /etc/abc/workbench.env ||\
+    \ \\\n  echo \"PB_ADMIN_EMAIL=abc-auth@abc.invalid\" >> /etc/abc/workbench.env\ngrep -q '^JUPYTERHUB_API_TOKEN='\
+    \ /etc/abc/workbench.env || \\\n  echo \"JUPYTERHUB_API_TOKEN=$(openssl rand -hex 32)\" >> /etc/abc/workbench.env\n"
+  path: /usr/local/bin/abc-workbench-secrets-extra
+  permissions: '0755'
+- content: "# Register abc-auth-svc as a JupyterHub service.\n#\n# Without this the credential broker\
+    \ can reach the hub but has no API token, so\n# POST /workbench/token fails with \"hub unreachable:\
+    \ JUPYTERHUB_API_TOKEN not\n# configured\". The broker mints per-user tokens and starts servers on\
+    \ the\n# user's behalf, which needs admin:users, admin:servers and tokens.\n#\n# The shared secret\
+    \ lives only in /etc/abc/workbench.env (mode 0600), which\n# both this file and the abc-auth-svc unit\
+    \ read; it is never written into the\n# hub database or into any Nomad job specification.\n_tok =\
+    \ \"\"\ntry:\n    with open(\"/etc/abc/workbench.env\") as _f:\n        for _line in _f:\n       \
+    \     if _line.startswith(\"JUPYTERHUB_API_TOKEN=\"):\n                _tok = _line.split(\"=\", 1)[1].strip()\n\
+    \                break\nexcept OSError:\n    pass\n\nif _tok:\n    c.JupyterHub.services = [{\"name\"\
+    : \"abc-auth-svc\", \"api_token\": _tok}]\n    c.JupyterHub.load_roles = [{\n        \"name\": \"\
+    abc-auth-svc-role\",\n        \"scopes\": [\"admin:users\", \"admin:servers\", \"tokens\"],\n    \
+    \    \"services\": [\"abc-auth-svc\"],\n    }]\n"
+  path: /opt/tljh/config/jupyterhub_config.d/20-abc-auth-svc.py
+  permissions: '0644'
+- content: "# Register abc-auth-svc as a JupyterHub service.\n#\n# Without this the credential broker\
+    \ can reach the hub but has no API token, so\n# POST /workbench/token fails with \"hub unreachable:\
+    \ JUPYTERHUB_API_TOKEN not\n# configured\". The broker mints per-user tokens and starts servers on\
+    \ the\n# user's behalf, which needs admin:users, admin:servers and tokens.\n#\n# The shared secret\
+    \ lives only in /etc/abc/workbench.env (mode 0600), which\n# both this file and the abc-auth-svc unit\
+    \ read; it is never written into the\n# hub database or into any Nomad job specification.\n_tok =\
+    \ \"\"\ntry:\n    with open(\"/etc/abc/workbench.env\") as _f:\n        for _line in _f:\n       \
+    \     if _line.startswith(\"JUPYTERHUB_API_TOKEN=\"):\n                _tok = _line.split(\"=\", 1)[1].strip()\n\
+    \                break\nexcept OSError:\n    pass\n\nif _tok:\n    c.JupyterHub.services = [{\"name\"\
+    : \"abc-auth-svc\", \"api_token\": _tok}]\n    c.JupyterHub.load_roles = [{\n        \"name\": \"\
+    abc-auth-svc-role\",\n        \"scopes\": [\"admin:users\", \"admin:servers\", \"tokens\"],\n    \
+    \    \"services\": [\"abc-auth-svc\"],\n    }]\n"
+  path: /var/lib/abc-auth-svc-hub.py
   permissions: '0644'

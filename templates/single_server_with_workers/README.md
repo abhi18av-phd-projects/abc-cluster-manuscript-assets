@@ -131,6 +131,49 @@ One difference from production: there, `/data` is a dedicated volume. Here it is
 a directory on the server's root disk, so home directories count against
 `serverDisk` (40 GB by default) and do not survive the instance being deleted.
 
+### Seeded accounts
+
+Provisioning ends by seeding the slot store, so the workbench is usable without
+any manual setup. Group and member names are drawn at random per deployment —
+no two clusters share identities — and the chosen names are printed in
+`/var/log/abc-workbench-seed.log`:
+
+```
+sudo cat /var/log/abc-workbench-seed.log
+```
+
+Three research groups are created, each with one member, plus a `reviewer`
+account. Each group gets a Nomad namespace and MinIO bucket named
+`su-<group>`, a `su-<group>-member` policy in both Nomad and MinIO, and a
+PocketBase group record. Each member gets a MinIO user, a Nomad client token
+named `pool-<slot>`, a JupyterHub user, and an unclaimed slot.
+
+`reviewer` is a super-admin: a Nomad *management* token, so `/auth/me` reports
+`groups: ["*"]` and `namespace: "*"`; the MinIO `consoleAdmin` policy plus every
+group's member policy; and JupyterHub admin rights.
+
+Credentials and claim codes land in `/run/abc-seed-out.json`, root-readable
+only. To use an account, claim its slot — the response is a ready-to-use `abc`
+CLI context:
+
+```
+sudo python3 -c 'import json;d=json.load(open("/run/abc-seed-out.json"));print(d["reviewer"]["claim_code"])'
+```
+
+```
+curl -X POST http://<server>:4182/slots/claim -H 'Content-Type: application/json' -d '{"claim_code":"<code>","name":"Reviewer","email":"reviewer@example.org"}'
+```
+
+Log in at `/auth/login` with the slot's MinIO access key as the username and its
+secret key as the password — the broker validates those against MinIO, not
+against a password database of its own.
+
+Names are load-bearing in ways that are easy to get wrong, so the seed script
+documents each convention at the top. The one worth repeating: PocketBase group
+names are stored **bare** (`oryx-genomics`), because the broker prepends `su-`
+when it renders a slot's CLI config. Storing `su-oryx-genomics` yields a
+namespace of `su-su-oryx-genomics`.
+
 ## Known issues
 
 **Traefik is not yet healthy.** The job now passes validation — the invalid

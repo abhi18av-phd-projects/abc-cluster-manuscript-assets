@@ -12,11 +12,24 @@ write_files:
     '
   path: /etc/profile.d/go.sh
   permissions: '0644'
-- content: "#!/bin/bash\n# Build abc-auth-svc from source into /opt/abc-auth-svc/.\nset -euo pipefail\nexport PATH=/usr/local/go/bin:$PATH\nGO_VERSION=${GO_VERSION:-1.27.0}\nif ! command -v go >/dev/null 2>&1; then\n  curl -fsSL \"https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz\" -o /tmp/go.tgz\n  rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz\nfi\nrm -rf /tmp/abc-auth-svc\ngit clone --depth 1 https://github.com/abc-cluster/abc-auth-svc.git /tmp/abc-auth-svc\nmkdir -p /opt/abc-auth-svc\ncd /tmp/abc-auth-svc\n# Module downloads fail intermittently while the rest of the workbench\n# installs concurrently; observed once in three provisions. Retry rather\n# than leave the node without its credential broker.\nfor attempt in 1 2 3; do\n  if go build -trimpath -o /opt/abc-auth-svc/abc-auth-svc .; then break; fi\n  echo \"go build attempt $attempt failed; retrying\"\n  sleep 10\ndone\n[ -x /opt/abc-auth-svc/abc-auth-svc ] || { echo \"auth-svc build failed after\
-    \ 3 attempts\"; exit 1; }\n/opt/abc-auth-svc/abc-auth-svc -version || true\necho \"abc-auth-svc built\"\n"
+- content: "#!/bin/bash\n# Build abc-auth-svc from source into /opt/abc-auth-svc/.\nset -euo pipefail\n\
+    export PATH=/usr/local/go/bin:$PATH\nGO_VERSION=${GO_VERSION:-1.27.0}\nif ! command -v go >/dev/null\
+    \ 2>&1; then\n  curl -fsSL \"https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz\" -o /tmp/go.tgz\n\
+    \  rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz\nfi\nrm -rf /tmp/abc-auth-svc\n\
+    git clone --depth 1 https://github.com/abc-cluster/abc-auth-svc.git /tmp/abc-auth-svc\nmkdir -p /opt/abc-auth-svc\n\
+    cd /tmp/abc-auth-svc\n# Module downloads fail intermittently while the rest of the workbench\n# installs\
+    \ concurrently; observed once in three provisions. Retry rather\n# than leave the node without its\
+    \ credential broker.\nfor attempt in 1 2 3; do\n  if go build -trimpath -o /opt/abc-auth-svc/abc-auth-svc\
+    \ .; then break; fi\n  echo \"go build attempt $attempt failed; retrying\"\n  sleep 10\ndone\n[ -x\
+    \ /opt/abc-auth-svc/abc-auth-svc ] || { echo \"auth-svc build failed after 3 attempts\"; exit 1; }\n\
+    /opt/abc-auth-svc/abc-auth-svc -version || true\necho \"abc-auth-svc built\"\n"
   path: /usr/local/bin/abc-install-authsvc
   permissions: '0755'
-- content: "#!/bin/bash\n# PocketBase holds workbench slot state. Published as a static binary.\nset -euo pipefail\nPB_VERSION=${PB_VERSION:-0.23.4}\ncommand -v pocketbase >/dev/null 2>&1 && { echo \"pocketbase present\"; exit 0; }\ncurl -fsSL -o /tmp/pb.zip \\\n  \"https://github.com/pocketbase/pocketbase/releases/download/v${PB_VERSION}/pocketbase_${PB_VERSION}_linux_amd64.zip\"\nunzip -o -q /tmp/pb.zip -d /tmp/pb && install -m 0755 /tmp/pb/pocketbase /usr/local/bin/pocketbase\nrm -rf /tmp/pb /tmp/pb.zip\nmkdir -p /opt/abc/pb_data\necho \"pocketbase installed\"\n"
+- content: "#!/bin/bash\n# PocketBase holds workbench slot state. Published as a static binary.\nset -euo\
+    \ pipefail\nPB_VERSION=${PB_VERSION:-0.23.4}\ncommand -v pocketbase >/dev/null 2>&1 && { echo \"pocketbase\
+    \ present\"; exit 0; }\ncurl -fsSL -o /tmp/pb.zip \\\n  \"https://github.com/pocketbase/pocketbase/releases/download/v${PB_VERSION}/pocketbase_${PB_VERSION}_linux_amd64.zip\"\
+    \nunzip -o -q /tmp/pb.zip -d /tmp/pb && install -m 0755 /tmp/pb/pocketbase /usr/local/bin/pocketbase\n\
+    rm -rf /tmp/pb /tmp/pb.zip\nmkdir -p /opt/abc/pb_data\necho \"pocketbase installed\"\n"
   path: /usr/local/bin/abc-install-pocketbase
   permissions: '0755'
 - content: '# Generated at provision time by abc-workbench-secrets.
@@ -67,7 +80,8 @@ write_files:
 
     ok=0; bad=0
 
-    chk() { if eval "$2"; then echo "  ok      $1"; ok=$((ok+1)); else echo "  MISSING $1"; bad=$((bad+1)); fi; }
+    chk() { if eval "$2"; then echo "  ok      $1"; ok=$((ok+1)); else echo "  MISSING $1"; bad=$((bad+1));
+    fi; }
 
     echo "WORKBENCH components:"
 
@@ -142,7 +156,16 @@ write_files:
     '
   path: /etc/systemd/system/abc-auth-svc.service
   permissions: '0644'
-- content: "#!/bin/bash\n# Install every workbench component. Runs as a systemd oneshot AFTER boot\n# rather than from cloud-init, because these installs take several minutes and\n# cloud-init's package stage runs before runcmd \u2014 putting them inline delayed\n# the Nomad ACL bootstrap past its readiness window and failed the deployment.\nset -uo pipefail\nexport DEBIAN_FRONTEND=noninteractive\napt-get update -qq >/dev/null 2>&1\napt-get install -y -qq python3-pip sqlite3 >/dev/null 2>&1\n/usr/local/bin/abc-workbench-secrets   || echo \"WORKBENCH secrets step failed\"\n/usr/local/bin/abc-install-pocketbase  || echo \"WORKBENCH pocketbase step failed\"\n/usr/local/bin/abc-install-tljh        || echo \"WORKBENCH tljh step failed\"\n/usr/local/bin/abc-install-authsvc     || echo \"WORKBENCH auth-svc step failed\"\nsystemctl daemon-reload\nsystemctl enable --now abc-pocketbase.service || echo \"WORKBENCH pocketbase service failed\"\n/usr/local/bin/abc-workbench-status\ntouch /var/lib/abc-workbench-installed\n"
+- content: "#!/bin/bash\n# Install every workbench component. Runs as a systemd oneshot AFTER boot\n#\
+    \ rather than from cloud-init, because these installs take several minutes and\n# cloud-init's package\
+    \ stage runs before runcmd \u2014 putting them inline delayed\n# the Nomad ACL bootstrap past its\
+    \ readiness window and failed the deployment.\nset -uo pipefail\nexport DEBIAN_FRONTEND=noninteractive\n\
+    apt-get update -qq >/dev/null 2>&1\napt-get install -y -qq python3-pip sqlite3 >/dev/null 2>&1\n/usr/local/bin/abc-workbench-secrets\
+    \   || echo \"WORKBENCH secrets step failed\"\n/usr/local/bin/abc-install-pocketbase  || echo \"WORKBENCH\
+    \ pocketbase step failed\"\n/usr/local/bin/abc-install-tljh        || echo \"WORKBENCH tljh step failed\"\
+    \n/usr/local/bin/abc-install-authsvc     || echo \"WORKBENCH auth-svc step failed\"\nsystemctl daemon-reload\n\
+    systemctl enable --now abc-pocketbase.service || echo \"WORKBENCH pocketbase service failed\"\n/usr/local/bin/abc-workbench-status\n\
+    touch /var/lib/abc-workbench-installed\n"
   path: /usr/local/bin/abc-workbench-install
   permissions: '0755'
 - content: '[Unit]
@@ -184,7 +207,73 @@ write_files:
     '
   path: /etc/systemd/system/abc-workbench-install.service
   permissions: '0644'
-- content: "#!/bin/bash\n# The Littlest JupyterHub, on the Nomad SERVER.\n#\n# WHY THE SERVER\n#   TLJH manages per-user notebook servers as systemd units on one machine; it\n#   is not a Nomad spawner and cannot spread users across the cluster. Putting\n#   it on the server keeps every worker free for batch jobs and apps, which is\n#   what the workers are sized for. The server runs no Nomad workloads, so the\n#   notebooks are not competing with scheduled work.\n#\n# WHY NOT THE NOMAD SPAWNER\n#   An earlier revision used jupyterhub-nomad-spawner, which schedules each\n#   notebook as a Nomad job. That pins the hub to Python 3.10 (the spawner\n#   declares Requires-Python >=3.10,<3.11 while Ubuntu 24.04 ships 3.12) and it\n#   puts interactive sessions on the same nodes as batch work. TLJH avoids both.\nset -euo pipefail\n[ -x /opt/tljh/hub/bin/jupyterhub ] && { echo \"tljh present\"; exit 0; }\nexport DEBIAN_FRONTEND=noninteractive\ncurl -fsSL https://tljh.jupyter.org/bootstrap.py -o\
-    \ /tmp/tljh-bootstrap.py\n# --admin is required by the bootstrap; abc-auth-svc is the real gate in front\n# of the hub, so this account exists only to satisfy TLJH's own bootstrap.\npython3 /tmp/tljh-bootstrap.py --admin abc-admin >/tmp/tljh-install.log 2>&1 || {\n  echo \"tljh bootstrap failed; see /tmp/tljh-install.log\" >&2\n  tail -5 /tmp/tljh-install.log >&2\n  exit 1\n}\nrm -f /tmp/tljh-bootstrap.py\necho \"tljh installed\"\n"
+- content: "#!/bin/bash\n# The Littlest JupyterHub, on the Nomad SERVER.\n#\n# WHY THE SERVER\n#   TLJH\
+    \ manages per-user notebook servers as systemd units on one machine; it\n#   is not a Nomad spawner\
+    \ and cannot spread users across the cluster. Putting\n#   it on the server keeps every worker free\
+    \ for batch jobs and apps, which is\n#   what the workers are sized for. The server runs no Nomad\
+    \ workloads, so the\n#   notebooks are not competing with scheduled work.\n#\n# WHY NOT THE NOMAD\
+    \ SPAWNER\n#   An earlier revision used jupyterhub-nomad-spawner, which schedules each\n#   notebook\
+    \ as a Nomad job. That pins the hub to Python 3.10 (the spawner\n#   declares Requires-Python >=3.10,<3.11\
+    \ while Ubuntu 24.04 ships 3.12) and it\n#   puts interactive sessions on the same nodes as batch\
+    \ work. TLJH avoids both.\nset -euo pipefail\n[ -x /opt/tljh/hub/bin/jupyterhub ] && { echo \"tljh\
+    \ present\"; exit 0; }\nexport DEBIAN_FRONTEND=noninteractive\ncurl -fsSL https://tljh.jupyter.org/bootstrap.py\
+    \ -o /tmp/tljh-bootstrap.py\n# --admin is required by the bootstrap; abc-auth-svc is the real gate\
+    \ in front\n# of the hub, so this account exists only to satisfy TLJH's own bootstrap.\npython3 /tmp/tljh-bootstrap.py\
+    \ --admin abc-admin >/tmp/tljh-install.log 2>&1 || {\n  echo \"tljh bootstrap failed; see /tmp/tljh-install.log\"\
+    \ >&2\n  tail -5 /tmp/tljh-install.log >&2\n  exit 1\n}\nrm -f /tmp/tljh-bootstrap.py\n# Unified workbench\
+    \ home (ADR-0064). The config file itself is written by\n# cloud-init; TLJH creates its jupyterhub_config.d\
+    \ only at bootstrap time, so\n# the file is re-placed here in case the bootstrap overwrote the directory.\n\
+    install -d -m 0755 /data/workbench\ninstall -d -m 0700 /opt/tljh/config/jupyterhub_config.d\nif [\
+    \ -f /var/lib/abc-unified-home.py ]; then\n  install -m 0644 /var/lib/abc-unified-home.py \\\n   \
+    \ /opt/tljh/config/jupyterhub_config.d/10-abc-unified-home.py\nfi\nsystemctl restart jupyterhub ||\
+    \ true\necho \"tljh installed\"\n"
   path: /usr/local/bin/abc-install-tljh
   permissions: '0755'
+- content: "# ABC-cluster unified workbench home (ADR-0064).\n#\n# Each slot has ONE home: /data/workbench/<slot>/home,\
+    \ which is also the Linux\n# passwd home (pw_dir) of jupyter-<slot>. There is no separate\n# /home/jupyter-<slot>.\
+    \ Login shells, ssh, cron and the JupyterLab spawner all\n# resolve ~ to the same directory.\n#\n\
+    # This is a contract, not a preference. abc-cluster-cli writes uploads to\n# /data/workbench/<slot>/home/data/\
+    \ and reports that path back to the user on\n# \"abc workbench stop\"; abc-auth-svc's slot diagnostic\
+    \ asserts the directory\n# exists and is owned by jupyter-<slot>. Stock TLJH would place the home\
+    \ at\n# /home/jupyter-<slot> and both would be wrong.\n#\n# TLJH's UserCreatingSpawner calls tljh.user.ensure_user(),\
+    \ which returns early\n# when the account already exists. Creating the account from a pre-spawn hook\n\
+    # therefore fixes the home once, and TLJH leaves it alone.\nimport os\nimport pwd\nimport subprocess\n\
+    \nWORKBENCH_ROOT = \"/data/workbench\"\n\n\ndef abc_unified_home(spawner):\n    slot = spawner.user.name\n\
+    \    sys_user = \"jupyter-\" + slot\n    slot_root = os.path.join(WORKBENCH_ROOT, slot)\n    home\
+    \ = os.path.join(slot_root, \"home\")\n\n    fresh = not os.path.isdir(home)\n    os.makedirs(home,\
+    \ mode=0o700, exist_ok=True)\n\n    try:\n        pw = pwd.getpwnam(sys_user)\n    except KeyError:\n\
+    \        # --home-dir without -m: the directory already exists above.\n        subprocess.check_call(\n\
+    \            [\"useradd\", \"--home-dir\", home, \"--shell\", \"/bin/bash\", sys_user]\n        )\n\
+    \        pw = pwd.getpwnam(sys_user)\n        fresh = True\n\n    if pw.pw_dir != home:\n        subprocess.check_call([\"\
+    usermod\", \"--home\", home, sys_user])\n        fresh = True\n\n    owner = \"%s:%s\" % (sys_user,\
+    \ sys_user)\n    if fresh:\n        subprocess.check_call([\"chown\", \"-R\", owner, slot_root])\n\
+    \    else:\n        # Cheap per-spawn correction; a recursive chown over a populated home\n      \
+    \  # would add seconds to every notebook start.\n        subprocess.check_call([\"chown\", owner,\
+    \ slot_root, home])\n    os.chmod(home, 0o700)\n\n\nc.Spawner.notebook_dir = WORKBENCH_ROOT + \"/{username}/home\"\
+    \nc.Spawner.default_url = \"/lab\"\nc.Spawner.pre_spawn_hook = abc_unified_home\n"
+  path: /opt/tljh/config/jupyterhub_config.d/10-abc-unified-home.py
+  permissions: '0644'
+- content: "# ABC-cluster unified workbench home (ADR-0064).\n#\n# Each slot has ONE home: /data/workbench/<slot>/home,\
+    \ which is also the Linux\n# passwd home (pw_dir) of jupyter-<slot>. There is no separate\n# /home/jupyter-<slot>.\
+    \ Login shells, ssh, cron and the JupyterLab spawner all\n# resolve ~ to the same directory.\n#\n\
+    # This is a contract, not a preference. abc-cluster-cli writes uploads to\n# /data/workbench/<slot>/home/data/\
+    \ and reports that path back to the user on\n# \"abc workbench stop\"; abc-auth-svc's slot diagnostic\
+    \ asserts the directory\n# exists and is owned by jupyter-<slot>. Stock TLJH would place the home\
+    \ at\n# /home/jupyter-<slot> and both would be wrong.\n#\n# TLJH's UserCreatingSpawner calls tljh.user.ensure_user(),\
+    \ which returns early\n# when the account already exists. Creating the account from a pre-spawn hook\n\
+    # therefore fixes the home once, and TLJH leaves it alone.\nimport os\nimport pwd\nimport subprocess\n\
+    \nWORKBENCH_ROOT = \"/data/workbench\"\n\n\ndef abc_unified_home(spawner):\n    slot = spawner.user.name\n\
+    \    sys_user = \"jupyter-\" + slot\n    slot_root = os.path.join(WORKBENCH_ROOT, slot)\n    home\
+    \ = os.path.join(slot_root, \"home\")\n\n    fresh = not os.path.isdir(home)\n    os.makedirs(home,\
+    \ mode=0o700, exist_ok=True)\n\n    try:\n        pw = pwd.getpwnam(sys_user)\n    except KeyError:\n\
+    \        # --home-dir without -m: the directory already exists above.\n        subprocess.check_call(\n\
+    \            [\"useradd\", \"--home-dir\", home, \"--shell\", \"/bin/bash\", sys_user]\n        )\n\
+    \        pw = pwd.getpwnam(sys_user)\n        fresh = True\n\n    if pw.pw_dir != home:\n        subprocess.check_call([\"\
+    usermod\", \"--home\", home, sys_user])\n        fresh = True\n\n    owner = \"%s:%s\" % (sys_user,\
+    \ sys_user)\n    if fresh:\n        subprocess.check_call([\"chown\", \"-R\", owner, slot_root])\n\
+    \    else:\n        # Cheap per-spawn correction; a recursive chown over a populated home\n      \
+    \  # would add seconds to every notebook start.\n        subprocess.check_call([\"chown\", owner,\
+    \ slot_root, home])\n    os.chmod(home, 0o700)\n\n\nc.Spawner.notebook_dir = WORKBENCH_ROOT + \"/{username}/home\"\
+    \nc.Spawner.default_url = \"/lab\"\nc.Spawner.pre_spawn_hook = abc_unified_home\n"
+  path: /var/lib/abc-unified-home.py
+  permissions: '0644'

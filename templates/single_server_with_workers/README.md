@@ -110,18 +110,32 @@ the server. It adds several minutes to provisioning because `abc-auth-svc` is
 compiled from source, and it is only useful in this topology, where ACLs give
 the broker real per-user tokens to issue. Set it to `false` for pipeline testing.
 
+JupyterHub runs on the **server**, not on a worker. The Littlest JupyterHub
+manages per-user notebooks as systemd units on a single machine, so it cannot
+spread users across the cluster; keeping it on the server leaves every worker
+free for the batch jobs and apps they are sized for.
+
+### Home directories
+
+Each slot has one home, `/data/workbench/<slot>/home`, which is also the Linux
+passwd home of `jupyter-<slot>`. Login shells, `ssh`, `cron` and the JupyterLab
+spawner therefore all resolve `~` to the same directory. This matches the
+production deployment (ADR-0064) and is what the rest of the stack assumes:
+`abc data upload` writes to `/data/workbench/<slot>/home/data/`, and the
+credential broker's slot diagnostic asserts the directory exists and is owned by
+`jupyter-<slot>`. Stock TLJH would place the home at `/home/jupyter-<slot>`
+instead, so `jupyterhub_config.d/10-abc-unified-home.py` creates the account
+with the correct home from a pre-spawn hook, before TLJH's own `useradd` runs.
+
+One difference from production: there, `/data` is a dedicated volume. Here it is
+a directory on the server's root disk, so home directories count against
+`serverDisk` (40 GB by default) and do not survive the instance being deleted.
+
 ## Known issues
 
-**Traefik does not deploy.** `deploy-traefik` fails validation:
-
-```
-service[0] "abc-traefik" validation failed:
-  ignore_warnings on check_restart only supported for Consul service checks
-```
-
-`ignore_warnings` is only valid for Consul-registered checks, and this job uses
-Nomad service discovery. Everything else in the deployment is unaffected —
-pipelines, object storage and the credential broker do not route through
-Traefik — but browser-facing routing for the workbench will need it. To be
-fixed by removing `ignore_warnings` from the `check_restart` block, or moving
-the job to a Consul check.
+**Traefik is not yet healthy.** The job now passes validation — the invalid
+`ignore_warnings` field has been removed from its `check_restart` block — but its
+tasks still restart under their health check. Everything else in the deployment
+is unaffected: pipelines, object storage, the credential broker and the
+workbench are reached directly and do not route through Traefik. Browser-facing
+routing on a single published port still needs it.

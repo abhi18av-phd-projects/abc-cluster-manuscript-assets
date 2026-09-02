@@ -24,8 +24,10 @@ The workflow is deliberately three steps, not two. The report comes out of the
 object store to your own machine, you look at it, and only then does it go up.
 
 ```bash
-# 1. Fetch the report the pipeline produced
-abc data download s3://<bucket>/<run>/multiqc/multiqc_report.html .
+# 1. Fetch the report the pipeline produced.
+#    `pull` is the storage->local command; `abc data download`
+#    fetches from a scientific database by accession, not from S3.
+abc data pull s3://<bucket>/<run>/multiqc/multiqc_report.html .
 
 # 2. Open it and confirm it is the report you meant to publish
 open multiqc_report.html          # or: xdg-open / your browser

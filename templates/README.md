@@ -48,51 +48,52 @@ first `pulumi up`.
 | Class | Pipelines | cpus | memory | disk |
 | --- | --- | --- | --- | --- |
 | **A — executor check** | `nextflow-io/hello` | 2 | 8G | 20G |
-| **B — small real workflow** | `nextflow-io/rnaseq-nf` | 4 | 16G | 30G |
-| **C — nf-core baseline** | `nf-core/demo` | 4 | 16G | 40G |
-| **D — full nf-core pipelines** | `nf-core/detaxizer`, `nf-core/viralrecon` | 16 | 96G | 150G |
+| **B — small real workflow** | `nextflow-io/rnaseq-nf` | 4 | 12G | 30G |
+| **C — everything in this protocol** | + `nf-core/demo`, `detaxizer`, `viralrecon` | **8** | **20G** | **60G** |
 
-Class A proves the executor, the object store and the node pool agree. Class B is
-the smallest workflow that is a real workflow. Class C adds nf-core's conventions.
-Class D is production-shaped and is what the manuscript's examples use.
+**8 vCPU / 20 GB / 60 GB is the recommended size.** It is the smallest
+configuration on which all five pipelines complete, verified one at a time with
+nothing else scheduled:
 
-Every pipeline runs with `abc pipeline run` and nothing else. No Nextflow
-configuration files are supplied or required.
+| Pipeline | Processes | Wall clock | Peak memory | Peak load |
+| --- | ---: | ---: | ---: | ---: |
+| `nextflow-io/hello` | 4 | 1 min 16 s | 1.3 GB | 1.2 |
+| `nextflow-io/rnaseq-nf` | 4 | 3 min 16 s | 1.6 GB | 2.5 |
+| `nf-core/demo` | 8 | 3 min 16 s | 2.3 GB | 4.1 |
+| `nf-core/detaxizer` | 54 | 7 min 47 s | 2.7 GB | 2.5 |
+| `nf-core/viralrecon` | 200 | 57 min 1 s | 9.7 GB | 5.2 |
 
-### Why class D asks for so much
+Requires **nf-nomad 0.5.0-edge5 or newer**. No Nextflow configuration files are
+supplied or required.
 
-Class D is sized far above the work it performs, and the reason is worth knowing
-before you conclude the platform is heavy.
+### Why 20 GB and not less
 
-Nomad places a task on what it **requests**, not on what it uses, and reserves
-`cores` exclusively. Measured requests against measured usage, the latter read
-from each run's own `pipeline_info/execution_trace_*.txt`:
+Memory is the binding dimension, and it is set by the largest single *request*
+rather than by observed usage. Nomad places a task on what it reserves, so the
+node must fit the biggest process a pipeline declares, plus the pipeline head.
 
-| Pipeline | Largest request | Actually used (peak) |
-| --- | --- | --- |
-| `nf-core/demo` | 2 cores, 12 GB | < 1 GB |
-| `nf-core/detaxizer` | 12 cores, 80 GB | 0.8 GB, 418 % CPU |
-| `nf-core/viralrecon` | 12 cores, 72 GB | 11.2 GB, 501 % CPU |
-
-detaxizer asks for a hundred times the memory it touches. That request is not
-what the pipeline intends: its `test` profile caps resources through
-`process.resourceLimits`, which is how it passes CI on hosted runners of modest
-size. The cap is not reaching the generated job specification, so the raw
-`conf/base.config` label is used instead. This is a known defect and is being
-tracked; the sizing above is the workaround until it is fixed.
-
-An oversized request is fatal rather than wasteful, because Nomad will not place
-it at all:
+`nf-core/detaxizer` and `viralrecon` both cap their `test` profile at
+`resourceLimits = [cpus: 4, memory: '15.GB']`. The pipeline head reserves a
+further 2 GB on the same node, so 17 GB is the floor and a 16 GB node fails:
 
 ```
 Placement Failure
   * Dimension "memory" exhausted on 1 nodes
 ```
 
-The job then neither fails nor runs. It waits indefinitely for a node that
-cannot exist, which is the single most confusing failure on a small deployment.
-If you see it, the node is smaller than some process's declared request — check
-`nomad job status <job>` and compare against the table above.
+That failure is silent in the sense that matters — the job neither errors nor
+runs, it waits indefinitely — so prefer the extra headroom. 20 GB leaves ~3 GB
+spare.
+
+CPU is less tight: with 4-core tasks on 8 cores, two run side by side and the
+rest queue, which costs wall-clock rather than correctness. `viralrecon` takes
+57 minutes at this size against 38 on a 16-core node.
+
+> **Historical note.** Before nf-nomad 0.5.0-edge5, `process.resourceLimits`
+> was not applied to the generated job specification, so `detaxizer` requested
+> 12 cores and 80 GB for a process whose measured peak was 0.8 GB, and the same
+> workload needed a 96 GB node. That is fixed upstream; the sizes above assume
+> the fix.
 
 ## Addons
 

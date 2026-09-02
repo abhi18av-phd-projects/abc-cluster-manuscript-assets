@@ -102,13 +102,15 @@ cached.
 
 | Pipeline | Revision | Profile | Wall clock | Processes | Peak memory | Peak load | Disk |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `nextflow-io/hello` | master | — | 45 s | 4 | 1.4 GB | 1.0 | +124 MB (cached) |
-| `nextflow-io/rnaseq-nf` | master | — | 3 min 16 s | 4 | 1.7 GB | 1.4 | +3.1 GB |
-| `nf-core/demo` | 1.2.0 | test | 3 min 16 s | 8 | 2.4 GB | 2.2 | +627 MB |
-| `nf-core/detaxizer` | 1.3.0 | test | 7 min 2 s | 54 | 3.4 GB | 5.2 | +5.5 GB |
-| `nf-core/viralrecon` | 3.0.0 | test | 38 min 10 s | 200 | 12.1 GB | 14.1 | +7.1 GB |
+| `nextflow-io/hello` | master | — | 1 min 16 s | 4 | 1.3 GB | 1.2 |
+| `nextflow-io/rnaseq-nf` | master | — | 3 min 16 s | 4 | 1.6 GB | 2.5 |
+| `nf-core/demo` | 1.2.0 | test | 3 min 16 s | 8 | 2.3 GB | 4.1 |
+| `nf-core/detaxizer` | 1.3.0 | test | 7 min 47 s | 54 | 2.7 GB | 2.5 |
+| `nf-core/viralrecon` | 3.0.0 | test | 57 min 1 s | 200 | 9.7 GB | 5.2 |
 
-Measured on a 16 vCPU / 96 GB / 150 GB deployment, each pipeline run on its own
+Measured on **8 vCPU / 20 GB / 60 GB** with nf-nomad 0.5.0-edge5, each pipeline
+run on its own and with no Nextflow configuration file supplied.
+
 with nothing else scheduled.
 
 Two things are worth reading off this table rather than the individual numbers.

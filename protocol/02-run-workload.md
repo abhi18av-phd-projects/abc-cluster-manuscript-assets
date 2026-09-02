@@ -127,7 +127,7 @@ Fetch the report, look at it, then publish it. The middle step is deliberate and
 is explained in [../apps/mtbseq-90-multiqc/README.md](../apps/mtbseq-90-multiqc/README.md).
 
 ```bash
-abc data download s3://nf-work/demo-results/multiqc/multiqc_report.html .
+abc data pull s3://nf-work/demo-results/multiqc/multiqc_report.html .
 open multiqc_report.html
 abc app deploy
 abc app list

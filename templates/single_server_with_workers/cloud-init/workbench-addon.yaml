@@ -376,24 +376,35 @@ write_files:
     \ alias set abc %s %s %s\" % (endpoint, user, pw), check=False)\n    ok = subprocess.run(\"mc admin\
     \ info abc\", shell=True,\n                        capture_output=True).returncode == 0\n    print(\"\
     \  mc alias abc -> %s (%s)\" % (endpoint, \"ok\" if ok else \"UNREACHABLE\"))\n    return ok\n\n\n\
-    def main():\n    ngroups = int(os.environ.get(\"ABC_SEED_GROUPS\", \"3\"))\n    os.environ[\"NOMAD_TOKEN\"\
-    ] = nomad_bootstrap_token()\n    os.environ[\"NOMAD_ADDR\"] = \"http://127.0.0.1:4646\"\n    jht =\
-    \ envval(\"JUPYTERHUB_API_TOKEN\")\n    ensure_mc_alias()\n\n    tok = pb_superuser_token()\n    if\
-    \ not tok:\n        print(\"could not authenticate to PocketBase\", file=sys.stderr)\n        return\
-    \ 1\n    ensure_collections(tok)\n\n    # Idempotent: drop records from any previous seed run.\n \
-    \   for coll in (\"slots\", \"groups\"):\n        for rec in (pb(\"/api/collections/%s/records?perPage=200\"\
-    \ % coll, token=tok) or {}).get(\"items\", []):\n            pb(\"/api/collections/%s/records/%s\"\
-    \ % (coll, rec[\"id\"]), None, \"DELETE\", tok)\n\n    animals = rng.sample(ANIMALS, ngroups)\n  \
-    \  fields  = rng.sample(FIELDS, ngroups)\n    members = rng.sample(NAMES, ngroups)\n    bare    =\
-    \ [\"%s-%s\" % (animals[i], fields[i]) for i in range(ngroups)]\n    out     = {\"groups\": [], \"\
-    reviewer\": {}}\n\n    def minio_user(ak, sk, policies):\n        sh(\"mc admin user add abc %s %s\"\
-    \ % (ak, sk), check=False)\n        for p in policies:\n            sh(\"mc admin policy attach abc\
-    \ %s --user %s\" % (p, ak), check=False)\n\n    for i, name in enumerate(bare):\n        member =\
-    \ members[i]\n        ns = bucket = \"su-\" + name\n        print(\"== %s (namespace %s, member %s)\
-    \ ==\" % (name, ns, member))\n\n        sh('nomad namespace apply -description \"group %s\" %s' %\
-    \ (name, ns))\n        pol = \"/tmp/pol-%s.hcl\" % ns\n        open(pol, \"w\").write('namespace \"\
-    %s\" { policy = \"write\" }\\nnode { policy = \"read\" }\\n' % ns)\n        sh('nomad acl policy apply\
-    \ -description \"member %s\" %s-member %s' % (ns, ns, pol))\n\n        sh(\"mc mb --ignore-existing\
+    def grant_hub_admin(slot):\n    \"\"\"Add a slot to TLJH's admin list.\n\n    PATCHing admin=true\
+    \ through the hub API is refused: the abc-auth-svc\n    service role can create and read users but\
+    \ cannot grant the admin flag.\n    TLJH owns its admin list in config.yaml, so set it there and reload.\n\
+    \    \"\"\"\n    cfg = \"/opt/tljh/config/config.yaml\"\n    try:\n        import yaml\n    except\
+    \ ImportError:\n        print(\"  ! PyYAML unavailable; %s not made a hub admin\" % slot)\n      \
+    \  return\n    try:\n        with open(cfg) as f:\n            data = yaml.safe_load(f) or {}\n  \
+    \  except OSError:\n        print(\"  ! %s not readable; %s not made a hub admin\" % (cfg, slot))\n\
+    \        return\n    admins = (data.setdefault(\"users\", {}).get(\"admin\") or [])\n    if slot in\
+    \ admins:\n        return\n    admins.append(slot)\n    data[\"users\"][\"admin\"] = admins\n    with\
+    \ open(cfg, \"w\") as f:\n        yaml.safe_dump(data, f, default_flow_style=False)\n    sh(\"systemctl\
+    \ restart jupyterhub\", check=False)\n    time.sleep(8)\n    print(\"  %s added to the JupyterHub\
+    \ admin list\" % slot)\n\n\ndef main():\n    ngroups = int(os.environ.get(\"ABC_SEED_GROUPS\", \"\
+    3\"))\n    os.environ[\"NOMAD_TOKEN\"] = nomad_bootstrap_token()\n    os.environ[\"NOMAD_ADDR\"] =\
+    \ \"http://127.0.0.1:4646\"\n    jht = envval(\"JUPYTERHUB_API_TOKEN\")\n    ensure_mc_alias()\n\n\
+    \    tok = pb_superuser_token()\n    if not tok:\n        print(\"could not authenticate to PocketBase\"\
+    , file=sys.stderr)\n        return 1\n    ensure_collections(tok)\n\n    # Idempotent: drop records\
+    \ from any previous seed run.\n    for coll in (\"slots\", \"groups\"):\n        for rec in (pb(\"\
+    /api/collections/%s/records?perPage=200\" % coll, token=tok) or {}).get(\"items\", []):\n        \
+    \    pb(\"/api/collections/%s/records/%s\" % (coll, rec[\"id\"]), None, \"DELETE\", tok)\n\n    animals\
+    \ = rng.sample(ANIMALS, ngroups)\n    fields  = rng.sample(FIELDS, ngroups)\n    members = rng.sample(NAMES,\
+    \ ngroups)\n    bare    = [\"%s-%s\" % (animals[i], fields[i]) for i in range(ngroups)]\n    out \
+    \    = {\"groups\": [], \"reviewer\": {}}\n\n    def minio_user(ak, sk, policies):\n        sh(\"\
+    mc admin user add abc %s %s\" % (ak, sk), check=False)\n        for p in policies:\n            sh(\"\
+    mc admin policy attach abc %s --user %s\" % (p, ak), check=False)\n\n    for i, name in enumerate(bare):\n\
+    \        member = members[i]\n        ns = bucket = \"su-\" + name\n        print(\"== %s (namespace\
+    \ %s, member %s) ==\" % (name, ns, member))\n\n        sh('nomad namespace apply -description \"group\
+    \ %s\" %s' % (name, ns))\n        pol = \"/tmp/pol-%s.hcl\" % ns\n        open(pol, \"w\").write('namespace\
+    \ \"%s\" { policy = \"write\" }\\nnode { policy = \"read\" }\\n' % ns)\n        sh('nomad acl policy\
+    \ apply -description \"member %s\" %s-member %s' % (ns, ns, pol))\n\n        sh(\"mc mb --ignore-existing\
     \ abc/%s\" % bucket, check=False)\n        ip = \"/tmp/iam-%s.json\" % ns\n        open(ip, \"w\"\
     ).write(json.dumps({\"Version\": \"2012-10-17\", \"Statement\": [\n            {\"Effect\": \"Allow\"\
     , \"Action\": [\"s3:*\"], \"Resource\": [\"arn:aws:s3:::%s/*\" % bucket]},\n            {\"Effect\"\
@@ -423,13 +434,13 @@ write_files:
     : rak, \"minio_secret_key\": rsk,\n        \"nomad_token_secret\": rtd.get(\"SecretID\", \"\"),\n\
     \        \"nomad_token_accessor\": rtd.get(\"AccessorID\", \"\"),\n        \"state\": \"unclaimed\"\
     , \"cred_source\": \"local\", \"claim_code\": code}, \"POST\", tok)\n    if jht:\n        hub(\"/users/\"\
-    \ + rv, jht)\n    out[\"reviewer\"] = {\"slot\": rv, \"access_key\": rak, \"secret_key\": rsk,\n \
-    \                      \"nomad_token\": rtd.get(\"SecretID\", \"\"), \"groups\": bare,\n         \
-    \              \"claim_code\": code, \"slot_id\": srec[\"id\"] if srec else None}\n\n    json.dump(out,\
-    \ open(OUTFILE, \"w\"), indent=2)\n    os.chmod(OUTFILE, 0o600)\n    print(\"\\nSeeded groups: %s\"\
-    \ % \", \".join(bare))\n    print(\"Seeded slots:  %s\" % \", \".join([g[\"slot\"] for g in out[\"\
-    groups\"]] + [rv]))\n    print(\"Credentials and claim codes: %s (root-only)\" % OUTFILE)\n    return\
-    \ 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+    \ + rv, jht)\n    grant_hub_admin(rv)\n    out[\"reviewer\"] = {\"slot\": rv, \"access_key\": rak,\
+    \ \"secret_key\": rsk,\n                       \"nomad_token\": rtd.get(\"SecretID\", \"\"), \"groups\"\
+    : bare,\n                       \"claim_code\": code, \"slot_id\": srec[\"id\"] if srec else None}\n\
+    \n    json.dump(out, open(OUTFILE, \"w\"), indent=2)\n    os.chmod(OUTFILE, 0o600)\n    print(\"\\\
+    nSeeded groups: %s\" % \", \".join(bare))\n    print(\"Seeded slots:  %s\" % \", \".join([g[\"slot\"\
+    ] for g in out[\"groups\"]] + [rv]))\n    print(\"Credentials and claim codes: %s (root-only)\" %\
+    \ OUTFILE)\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
   path: /usr/local/bin/abc-workbench-seed
   permissions: '0755'
 - content: "#!/bin/bash\n# Secrets the workbench needs beyond the base set: a PocketBase superuser\n#\

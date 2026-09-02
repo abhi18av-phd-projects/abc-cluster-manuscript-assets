@@ -420,8 +420,11 @@ const workbenchEnv = enableWorkbench ? new command.local.Command("workbench-env"
     create: pulumi.interpolate`
         multipass exec abc-server -- sudo bash -c 'TOKEN=$(awk "/^Secret ID/ { print \$NF }" /etc/nomad-bootstrap-token 2>/dev/null)
 cat > /etc/abc/workbench-cluster.env <<EOF
-# TLJH's hub API listens on 15001, not JupyterHub's stock 8081.
+# The TLJH hub API listens on 15001, not the stock JupyterHub 8081.
 # Verified with: ss -lntp | grep python3
+# Do not use an apostrophe anywhere in this heredoc. It sits inside a
+# single-quoted bash -c, so one closes the string and truncates the file at
+# that character, leaving a node whose workbench has no cluster endpoints.
 ABC_AUTH_LISTEN=0.0.0.0:4182
 ABC_AUTH_LOG_LEVEL=info
 NOMAD_ADDR=http://${serverNode.ipv4}:4646
@@ -430,7 +433,7 @@ JUPYTERHUB_API_URL=http://127.0.0.1:15001/hub/api
 HUB_PUBLIC_URL=http://${serverNode.ipv4}
 CLUSTER_NAME=abc-cluster
 CLUSTER_DATACENTER=dc1
-CLUSTER_HEAD_POOL=platform
+CLUSTER_HEAD_POOL=compute
 CLUSTER_WORKER_POOL=compute
 CLUSTER_NOMAD_ENDPOINT=http://${serverNode.ipv4}:4646
 CLUSTER_MINIO_ENDPOINT=http://${client0.ipv4}:9000
@@ -439,7 +442,14 @@ CLUSTER_AUTH_ENDPOINT=http://${serverNode.ipv4}:4182
 MINIO_CONSOLE_URL=http://${client0.ipv4}:9001
 COOKIE_SECURE=false
 EOF
-chmod 0640 /etc/abc/workbench-cluster.env'
+chmod 0640 /etc/abc/workbench-cluster.env
+for key in CLUSTER_MINIO_ENDPOINT CLUSTER_NOMAD_ENDPOINT ABC_AUTH_LISTEN NOMAD_TOKEN; do
+  grep -q "^$key=." /etc/abc/workbench-cluster.env || {
+    echo "workbench-cluster.env is missing $key — refusing to continue" >&2
+    exit 1
+  }
+done
+echo "workbench-cluster.env written ($(wc -l < /etc/abc/workbench-cluster.env) lines)"'
     `,
 }, { dependsOn: [bootstrapReady] }) : undefined;
 

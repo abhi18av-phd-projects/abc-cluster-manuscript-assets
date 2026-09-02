@@ -48,7 +48,7 @@ pulumi stack init multi
 
 # Set every value explicitly — see the warning below
 pulumi config set clientCount 2
-pulumi config set enableWorkbench false
+pulumi config set enableWorkbench true
 pulumi config set serverCpus 4
 pulumi config set serverMemory 8G
 pulumi config set serverDisk 40G
@@ -59,7 +59,14 @@ pulumi config set clientDisk 40G
 pulumi up
 ```
 
-A two-worker deployment takes roughly four minutes.
+A two-worker deployment takes roughly four minutes without the workbench, and
+around fifteen with it — most of the difference is TLJH's conda stack and
+compiling the credential broker from source.
+
+When it finishes, the workbench has seeded accounts ready to use. Follow
+[protocol/04](../../protocol/04-multi-node.md) from there: claim a slot, run a
+pipeline, open JupyterLab. Set `enableWorkbench false` only to test pipelines
+alone; the access-control story is what this topology exists to show.
 
 > **Set every config value, and do not re-initialise the stack.** Config lives in
 > `Pulumi.<stack>.yaml`. If that file is lost — `pulumi stack rm` followed by

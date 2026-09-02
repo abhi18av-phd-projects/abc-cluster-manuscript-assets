@@ -22,13 +22,76 @@ multipass exec abc-server -- sudo env NOMAD_ADDR=http://127.0.0.1:4646 \
   NOMAD_TOKEN=$TOKEN nomad node status
 ```
 
-## 2. Write the context
+## 2. Get an account
 
-The multi-node template does not yet emit a context file, so write one. Take the
-server address, the token above, and the address of the worker running MinIO:
+Provisioning seeds the slot store, so accounts already exist. Group and member
+names are drawn at random per deployment; read the ones this cluster got:
 
 ```bash
-# which worker is hosting MinIO
+multipass exec abc-server -- sudo cat /var/log/abc-workbench-seed.log
+```
+
+```
+Seeded groups: caracal-proteomics, aardvark-phylogenetics, duiker-metagenomics
+Seeded slots:  farai, lerato, tinashe, reviewer
+```
+
+Each member slot belongs to one group. `reviewer` is a super-admin: a Nomad
+management token, MinIO `consoleAdmin` plus every group member policy, and
+JupyterHub admin rights. Take a member slot to see the access control working;
+take `reviewer` to see everything at once.
+
+Read its claim code:
+
+```bash
+multipass exec abc-server -- sudo python3 -c \
+  "import json; d=json.load(open('/run/abc-seed-out.json')); print(d['groups'][0]['claim_code'])"
+```
+
+Redeem it. Keep the config out of `~/.abc/config.yaml` so an existing context is
+not disturbed:
+
+```bash
+export ABC_CLI_CONFIG_FILE=$PWD/reviewer.yaml
+abc auth claim <CLAIM-CODE> \
+  --endpoint http://<server-ip>:4182/slots/claim \
+  --email you@example.org --name "Your Name" --consent
+```
+
+```
+Claimed slot. Imported 1 context(s); active context: "abc-cluster"
+```
+
+That single command writes a complete, working config — Nomad address and token,
+the group namespace, MinIO endpoint and per-slot credentials, and the upload
+endpoint. Nothing needs to be filled in by hand:
+
+```yaml
+admin:
+  id: pool-farai
+  services:
+    minio:
+      access_key: farai-ejpxd7
+      endpoint: http://<minio-worker-ip>:9000
+    nomad:
+      addr: http://<server-ip>:4646
+      head_pool: compute
+      namespace: su-caracal-proteomics
+      worker_pool: compute
+```
+
+A claim code is single-use. Claiming again returns `code_invalid_or_used`; take
+the next slot's code from the same file.
+
+### Without the workbench
+
+With `enableWorkbench false` there is no broker and no seeded account, so write
+a context by hand from the bootstrap token and the MinIO root credentials. This
+is the operator path — it holds a cluster-wide management token, so prefer a
+claimed slot whenever the workbench is on:
+
+```bash
+TOKEN=$(multipass exec abc-server -- sudo awk '/^Secret ID/ {print $NF}' /etc/nomad-bootstrap-token)
 for w in abc-worker-0 abc-worker-1; do
   ip=$(multipass info "$w" --format csv | awk -F, 'NR==2{print $3}')
   curl -sf -m 4 "http://$ip:9000/minio/health/live" >/dev/null && echo "MinIO on $w ($ip)"
@@ -71,9 +134,17 @@ abc auth context add --from-file abc-context.yaml
 `head_pool` and `worker_pool` must both be `compute`, matching the pool the
 workers register into.
 
-## 3. Create the work-dir bucket
+## 3. Work-dir bucket
 
-The pipelines use an S3 work dir, so the bucket must exist:
+A claimed slot already has one: the seed creates the group bucket `su-<group>`,
+and the slot's MinIO credentials are scoped to it. Use it directly — there is
+nothing to create.
+
+A slot cannot write outside its own group's bucket, which is the access control
+doing its job. `s3://nf-work/` belongs to the operator path below and returns
+`AccessDenied` for a member slot.
+
+For the hand-written operator context, create the shared bucket:
 
 ```bash
 multipass exec abc-worker-0 -- sudo bash -c '
@@ -84,11 +155,16 @@ multipass exec abc-worker-0 -- sudo bash -c '
 ## 4. Run the pipelines
 
 ```bash
+NS=$(grep -m1 'namespace:' "$ABC_CLI_CONFIG_FILE" | awk '{print $2}')   # su-<group>
+
 abc pipeline run <url> --revision <tag> [--profile test] \
-  --work-dir s3://nf-work/<name>/ \
-  --param outdir=s3://nf-work/<name>-results/ \
-  --plugin nf-nomad@0.5.0-edge5
+  --work-dir "s3://$NS/nf-work/<name>/" \
+  --plugin nf-nomad@0.5.0-edge5 --wait --logs
 ```
+
+Results land under `s3://<namespace>/user/<slot>/results/` automatically, so
+`--param outdir=` is only needed to put them somewhere else. On the operator
+context, substitute `s3://nf-work/<name>/` for the work dir.
 
 | Pipeline | URL | Revision | Profile |
 | --- | --- | --- | --- |
@@ -99,10 +175,58 @@ abc pipeline run <url> --revision <tag> [--profile test] \
 Run them in that order: `hello` finishes in about a minute and fails fast if the
 executor, the object store or the node pool disagree.
 
+## 5. Open the workbench
+
+The browser workbench is on the **server**, on port 80. Log in with the slot's
+MinIO access key as the username and its secret key as the password — the broker
+validates those against MinIO, so there is no separate password to set:
+
+```bash
+multipass exec abc-server -- sudo python3 -c \
+  "import json; d=json.load(open('/run/abc-seed-out.json'))['groups'][0]; \
+   print(d['slot'], d['access_key'], d['secret_key'])"
+```
+
+Open `http://<server-ip>/` and sign in. A successful login redirects to the hub
+and JupyterLab starts within a few seconds.
+
+Each slot lands in `/data/workbench/<slot>/home`, which is also the Linux home
+of `jupyter-<slot>`, so a terminal inside JupyterLab and the notebook file
+browser see the same directory. `reviewer` additionally has the hub admin panel.
+
+Check it from the shell without a browser:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://<server-ip>/hub/login    # 200
+```
+
 ## Observed output
 
 Verified on a server plus two workers, Ubuntu 24.04, abc CLI v0.1.76,
-nf-nomad 0.5.0-edge5, Nomad v1.11.2.
+nf-nomad 0.5.0-edge5, Nomad v1.11.2. The `hello` row below was re-verified on a
+clean `pulumi up` with `enableWorkbench true`, run from a claimed member slot
+rather than the bootstrap token — the point being that an ordinary member, with
+no cluster-wide privileges, can run a pipeline end to end:
+
+```
+Submitting pipeline head job to Nomad...
+  Pipeline submitted
+  Job        farai-1788347937-nf-head-nextflow-io-hello
+  Workdir    s3://su-caracal-proteomics/nf-work/hello/ [user-set]
+  Results    s3://su-caracal-proteomics/user/farai/results/farai-1788347937/ [auto]
+  Visibility user-private
+```
+
+```
+[23/d642d5] Submitted process > sayHello (1)
+[8a/d5a907] Submitted process > sayHello (2)
+[7c/e1e5ba] Submitted process > sayHello (3)
+[2b/5eed02] Submitted process > sayHello (4)
+Bonjour world!
+Ciao world!
+Hello world!
+Hola world!
+```
 
 | Pipeline | Processes | Result |
 | --- | ---: | --- |

@@ -13,16 +13,24 @@ write_files:
   path: /etc/profile.d/go.sh
   permissions: '0644'
 - content: "#!/bin/bash\n# Build abc-auth-svc from source into /opt/abc-auth-svc/.\nset -euo pipefail\n\
-    export PATH=/usr/local/go/bin:$PATH\nGO_VERSION=${GO_VERSION:-1.27.0}\nif ! command -v go >/dev/null\
-    \ 2>&1; then\n  curl -fsSL \"https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz\" -o /tmp/go.tgz\n\
-    \  rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz\nfi\nrm -rf /tmp/abc-auth-svc\n\
-    git clone --depth 1 https://github.com/abc-cluster/abc-auth-svc.git /tmp/abc-auth-svc\nmkdir -p /opt/abc-auth-svc\n\
-    cd /tmp/abc-auth-svc\n# Module downloads fail intermittently while the rest of the workbench\n# installs\
-    \ concurrently; observed once in three provisions. Retry rather\n# than leave the node without its\
-    \ credential broker.\nfor attempt in 1 2 3; do\n  if go build -trimpath -o /opt/abc-auth-svc/abc-auth-svc\
-    \ .; then break; fi\n  echo \"go build attempt $attempt failed; retrying\"\n  sleep 10\ndone\n[ -x\
-    \ /opt/abc-auth-svc/abc-auth-svc ] || { echo \"auth-svc build failed after 3 attempts\"; exit 1; }\n\
-    /opt/abc-auth-svc/abc-auth-svc -version || true\necho \"abc-auth-svc built\"\n"
+    export PATH=/usr/local/go/bin:$PATH\n# systemd starts this oneshot without HOME, and Go derives GOPATH,\
+    \ GOMODCACHE\n# and GOCACHE from it. Without these the build fails immediately and\n# deterministically\
+    \ on \"module cache not found: neither GOMODCACHE nor GOPATH\n# is set\" \u2014 retrying cannot help,\
+    \ and the node ends up with the unit enabled\n# but no binary, restarting on 203/EXEC forever.\nexport\
+    \ HOME=${HOME:-/root}\nexport GOPATH=${GOPATH:-$HOME/go}\nexport GOMODCACHE=${GOMODCACHE:-$GOPATH/pkg/mod}\n\
+    export GOCACHE=${GOCACHE:-$HOME/.cache/go-build}\nGO_VERSION=${GO_VERSION:-1.27.0}\nif ! command -v\
+    \ go >/dev/null 2>&1; then\n  curl -fsSL \"https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz\"\
+    \ -o /tmp/go.tgz\n  rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz\n\
+    fi\nrm -rf /tmp/abc-auth-svc\ngit clone --depth 1 https://github.com/abc-cluster/abc-auth-svc.git\
+    \ /tmp/abc-auth-svc\nmkdir -p /opt/abc-auth-svc\ncd /tmp/abc-auth-svc\n# Fetch modules first, so a\
+    \ network failure is distinguishable from a\n# compile failure in the log. Back off properly: the\
+    \ whole workbench is\n# installing at once and a cold module download is slower than it looks.\nfor\
+    \ attempt in 1 2 3; do\n  if go mod download; then break; fi\n  echo \"go mod download attempt $attempt\
+    \ failed; retrying\"\n  sleep $((attempt * 20))\ndone\nfor attempt in 1 2 3; do\n  if go build -trimpath\
+    \ -o /opt/abc-auth-svc/abc-auth-svc .; then break; fi\n  echo \"go build attempt $attempt failed;\
+    \ retrying\"\n  sleep $((attempt * 20))\ndone\n[ -x /opt/abc-auth-svc/abc-auth-svc ] || { echo \"\
+    auth-svc build failed after 3 attempts\"; exit 1; }\n/opt/abc-auth-svc/abc-auth-svc -version || true\n\
+    echo \"abc-auth-svc built\"\n"
   path: /usr/local/bin/abc-install-authsvc
   permissions: '0755'
 - content: "#!/bin/bash\n# PocketBase holds workbench slot state. Published as a static binary.\nset -euo\
@@ -402,8 +410,16 @@ write_files:
     mc admin policy attach abc %s --user %s\" % (p, ak), check=False)\n\n    for i, name in enumerate(bare):\n\
     \        member = members[i]\n        ns = bucket = \"su-\" + name\n        print(\"== %s (namespace\
     \ %s, member %s) ==\" % (name, ns, member))\n\n        sh('nomad namespace apply -description \"group\
-    \ %s\" %s' % (name, ns))\n        pol = \"/tmp/pol-%s.hcl\" % ns\n        open(pol, \"w\").write('namespace\
-    \ \"%s\" { policy = \"write\" }\\nnode { policy = \"read\" }\\n' % ns)\n        sh('nomad acl policy\
+    \ %s\" %s' % (name, ns))\n        # Use the policy template cloud-init installed rather than writing\
+    \ one\n        # here. A hand-rolled \"namespace write\" policy looks sufficient and is\n        #\
+    \ not: the head job mounts the nf-work host volume, so a policy without\n        # that grant fails\
+    \ job submission with a bare 403.\n        pol = \"/tmp/pol-%s.hcl\" % ns\n        tmpl = \"/etc/nomad-policies/member.hcl.tmpl\"\
+    \n        if os.path.exists(tmpl):\n            open(pol, \"w\").write(open(tmpl).read().replace(\"\
+    __GROUP__\", ns))\n        else:\n            open(pol, \"w\").write(\n                'namespace\
+    \ \"%s\" {\\n'\n                '  policy       = \"read\"\\n'\n                '  capabilities =\
+    \ [\"submit-job\", \"dispatch-job\", \"read-job\", '\n                '\"list-jobs\", \"read-logs\"\
+    , \"read-fs\"]\\n'\n                '}\\n'\n                'node { policy = \"read\" }\\n'\n    \
+    \            'host_volume \"nf-work\" { policy = \"write\" }\\n' % ns)\n        sh('nomad acl policy\
     \ apply -description \"member %s\" %s-member %s' % (ns, ns, pol))\n\n        sh(\"mc mb --ignore-existing\
     \ abc/%s\" % bucket, check=False)\n        ip = \"/tmp/iam-%s.json\" % ns\n        open(ip, \"w\"\
     ).write(json.dumps({\"Version\": \"2012-10-17\", \"Statement\": [\n            {\"Effect\": \"Allow\"\

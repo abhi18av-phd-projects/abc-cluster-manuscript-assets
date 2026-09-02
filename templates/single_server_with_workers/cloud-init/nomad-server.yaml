@@ -36,7 +36,9 @@ runcmd:
 - systemctl enable nomad-apply-base-policies
 - systemctl start nomad-apply-base-policies
 write_files:
-- content: "data_dir = \"/opt/nomad/data\"\n\nbind_addr = \"0.0.0.0\"\n\nserver {\n  enabled          = true\n  bootstrap_expect = 1\n}\n\nacl {\n  enabled = true\n}\n\ntelemetry {\n  publish_allocation_metrics = true\n  publish_node_metrics       = true\n  prometheus_metrics         = true\n}\n"
+- content: "data_dir = \"/opt/nomad/data\"\n\nbind_addr = \"0.0.0.0\"\n\nserver {\n  enabled         \
+    \ = true\n  bootstrap_expect = 1\n}\n\nacl {\n  enabled = true\n}\n\ntelemetry {\n  publish_allocation_metrics\
+    \ = true\n  publish_node_metrics       = true\n  prometheus_metrics         = true\n}\n"
   path: /etc/nomad.d/server.hcl
 - content: '[Unit]
 
@@ -76,8 +78,17 @@ write_files:
 
     '
   path: /etc/systemd/system/nomad.service
-- content: "#!/bin/bash\nset -euo pipefail\nexport NOMAD_ADDR=http://127.0.0.1:4646\n\necho \"[nomad-bootstrap] Waiting for Nomad leader...\"\nfor i in $(seq 1 60); do\n  LEADER=$(curl -sf \"${NOMAD_ADDR}/v1/status/leader\" 2>/dev/null | tr -d '\"')\n  if [ -n \"$LEADER\" ] && [ \"$LEADER\" != \"null\" ]; then\n    echo \"[nomad-bootstrap] Leader elected: ${LEADER}\"\n    break\n  fi\n  sleep 2\ndone\n\nif [ -f /etc/nomad-bootstrap-token ]; then\n  echo \"[nomad-bootstrap] Token file already exists, skipping bootstrap\"\n  exit 0\nfi\n\nOUTPUT=$(nomad acl bootstrap 2>&1)\nRC=$?\n\nif echo \"$OUTPUT\" | grep -qi \"already bootstrapped\"; then\n  echo \"[nomad-bootstrap] ACL already bootstrapped (cluster was previously initialized)\"\n  exit 0\nfi\n\nif [ $RC -ne 0 ]; then\n  echo \"[nomad-bootstrap] ERROR: ${OUTPUT}\"\n  exit 1\nfi\n\necho \"$OUTPUT\" > /etc/nomad-bootstrap-token\nchmod 600 /etc/nomad-bootstrap-token\nSECRET=$(echo \"$OUTPUT\" | awk '/^Secret ID/ { print $NF }')\necho \"\
-    [nomad-bootstrap] Bootstrap complete. Secret ID: ${SECRET}\"\necho \"[nomad-bootstrap] Full token written to /etc/nomad-bootstrap-token\"\n"
+- content: "#!/bin/bash\nset -euo pipefail\nexport NOMAD_ADDR=http://127.0.0.1:4646\n\necho \"[nomad-bootstrap]\
+    \ Waiting for Nomad leader...\"\nfor i in $(seq 1 60); do\n  LEADER=$(curl -sf \"${NOMAD_ADDR}/v1/status/leader\"\
+    \ 2>/dev/null | tr -d '\"')\n  if [ -n \"$LEADER\" ] && [ \"$LEADER\" != \"null\" ]; then\n    echo\
+    \ \"[nomad-bootstrap] Leader elected: ${LEADER}\"\n    break\n  fi\n  sleep 2\ndone\n\nif [ -f /etc/nomad-bootstrap-token\
+    \ ]; then\n  echo \"[nomad-bootstrap] Token file already exists, skipping bootstrap\"\n  exit 0\n\
+    fi\n\nOUTPUT=$(nomad acl bootstrap 2>&1)\nRC=$?\n\nif echo \"$OUTPUT\" | grep -qi \"already bootstrapped\"\
+    ; then\n  echo \"[nomad-bootstrap] ACL already bootstrapped (cluster was previously initialized)\"\
+    \n  exit 0\nfi\n\nif [ $RC -ne 0 ]; then\n  echo \"[nomad-bootstrap] ERROR: ${OUTPUT}\"\n  exit 1\n\
+    fi\n\necho \"$OUTPUT\" > /etc/nomad-bootstrap-token\nchmod 600 /etc/nomad-bootstrap-token\nSECRET=$(echo\
+    \ \"$OUTPUT\" | awk '/^Secret ID/ { print $NF }')\necho \"[nomad-bootstrap] Bootstrap complete. Secret\
+    \ ID: ${SECRET}\"\necho \"[nomad-bootstrap] Full token written to /etc/nomad-bootstrap-token\"\n"
   path: /usr/local/bin/nomad-acl-bootstrap.sh
   permissions: '0755'
 - content: '[Unit]
@@ -116,19 +127,77 @@ write_files:
 
     '
   path: /etc/exports
-- content: "#!/bin/bash\nset -euo pipefail\n\nTOKEN_FILE=/etc/nomad-bootstrap-token\nNF_DIR=/opt/nf-test\nNF_CONFIG=\"${NF_DIR}/nextflow.config\"\n\necho \"[nf-setup] Waiting for Nomad ACL bootstrap token...\"\nfor i in $(seq 1 60); do\n  if [ -f \"${TOKEN_FILE}\" ] && [ -s \"${TOKEN_FILE}\" ]; then\n    echo \"[nf-setup] Token file found.\"\n    break\n  fi\n  sleep 5\ndone\n\nif [ ! -f \"${TOKEN_FILE}\" ]; then\n  echo \"[nf-setup] ERROR: bootstrap token file not found at ${TOKEN_FILE}\"\n  exit 1\nfi\n\nTOKEN=$(awk '/^Secret ID/ { print $NF }' \"${TOKEN_FILE}\")\nif [ -z \"${TOKEN}\" ]; then\n  echo \"[nf-setup] ERROR: could not extract Secret ID from ${TOKEN_FILE}\"\n  exit 1\nfi\n\nmkdir -p \"${NF_DIR}\"\nmkdir -p /opt/nf-work\n\n# Write nextflow.config for nf-nomad testing (server as head node, hello pipeline only).\n# Notes:\n#   - address uses 127.0.0.1 because Nextflow runs ON the server VM.\n#   - privileged = false: prevents nf-nomad from requesting Docker privileged\n#     mode\
-    \ (JobBuilder.groovy:163 forces it by default; we opt out here).\n#   - volume closure uses Nextflow 25.x DSL (NF 26.x v2 parser rejects it).\n#   - NXF_VER=25.10.5 must be set when running nextflow (see run command below).\n#   - NXF_HOME=/opt/nf-work: REQUIRED for multi-node runs. Nextflow injects\n#     `export PATH=\"$PATH:<NXF_HOME>/assets/<pipeline>/bin\"` into .command.run.\n#     Client containers only mount /opt/nf-work \u2014 a server-local NXF_HOME path\n#     causes exit 127 (\"command not found\") for pipelines with bin/ scripts.\n#\n# Run nf-nomad hello pipeline (from server):\n#   cd /opt/nf-test\n#   NXF_VER=25.10.5 NXF_HOME=/opt/nf-work nextflow run hello -c nextflow.config\n#\n# For rnaseq-nf/nf-core pipelines: run from a CLIENT VM (more RAM, avoids OOM).\n# Client VMs get their own nextflow.config via nomad-client-nf-setup.service.\n#\n# Also write the bootstrap token to /opt/nf-work/.nomad-bootstrap-token (mode 644)\n# so client VMs can read it via the NFS mount for\
-    \ their own nextflow.config setup.\ncat > \"${NF_CONFIG}\" << NFCONFIG\nplugins {\n  id \"nf-nomad@0.4.0-edge3\"\n}\n\nprocess {\n  executor = \"nomad\"\n  container = \"ubuntu:22.04\"\n}\n\ndocker {\n  enabled = true\n}\n\nnomad {\n  client {\n    address = \"http://127.0.0.1:4646\"\n    token   = \"${TOKEN}\"\n  }\n  jobs {\n    privileged         = false\n    deleteOnCompletion = false\n    volume = {\n      type \"host\"\n      name \"nf-work\"\n    }\n  }\n}\n\nworkDir = \"/opt/nf-work\"\nNFCONFIG\n\nchmod 600 \"${NF_CONFIG}\"\necho \"[nf-setup] nextflow.config written to ${NF_CONFIG} (token: ${TOKEN:0:8}...)\"\n\n# Write bootstrap token to NFS share so client VMs can generate their own configs.\n# mode 644: clients mount /opt/nf-work as ubuntu; they read but don't write this file.\ncp /etc/nomad-bootstrap-token /opt/nf-work/.nomad-bootstrap-token\nchmod 644 /opt/nf-work/.nomad-bootstrap-token\necho \"[nf-setup] Bootstrap token written to /opt/nf-work/.nomad-bootstrap-token\"\n"
+- content: "#!/bin/bash\nset -euo pipefail\n\nTOKEN_FILE=/etc/nomad-bootstrap-token\nNF_DIR=/opt/nf-test\n\
+    NF_CONFIG=\"${NF_DIR}/nextflow.config\"\n\necho \"[nf-setup] Waiting for Nomad ACL bootstrap token...\"\
+    \nfor i in $(seq 1 60); do\n  if [ -f \"${TOKEN_FILE}\" ] && [ -s \"${TOKEN_FILE}\" ]; then\n    echo\
+    \ \"[nf-setup] Token file found.\"\n    break\n  fi\n  sleep 5\ndone\n\nif [ ! -f \"${TOKEN_FILE}\"\
+    \ ]; then\n  echo \"[nf-setup] ERROR: bootstrap token file not found at ${TOKEN_FILE}\"\n  exit 1\n\
+    fi\n\nTOKEN=$(awk '/^Secret ID/ { print $NF }' \"${TOKEN_FILE}\")\nif [ -z \"${TOKEN}\" ]; then\n\
+    \  echo \"[nf-setup] ERROR: could not extract Secret ID from ${TOKEN_FILE}\"\n  exit 1\nfi\n\nmkdir\
+    \ -p \"${NF_DIR}\"\nmkdir -p /opt/nf-work\n\n# Write nextflow.config for nf-nomad testing (server\
+    \ as head node, hello pipeline only).\n# Notes:\n#   - address uses 127.0.0.1 because Nextflow runs\
+    \ ON the server VM.\n#   - privileged = false: prevents nf-nomad from requesting Docker privileged\n\
+    #     mode (JobBuilder.groovy:163 forces it by default; we opt out here).\n#   - volume closure uses\
+    \ Nextflow 25.x DSL (NF 26.x v2 parser rejects it).\n#   - NXF_VER=25.10.5 must be set when running\
+    \ nextflow (see run command below).\n#   - NXF_HOME=/opt/nf-work: REQUIRED for multi-node runs. Nextflow\
+    \ injects\n#     `export PATH=\"$PATH:<NXF_HOME>/assets/<pipeline>/bin\"` into .command.run.\n#  \
+    \   Client containers only mount /opt/nf-work \u2014 a server-local NXF_HOME path\n#     causes exit\
+    \ 127 (\"command not found\") for pipelines with bin/ scripts.\n#\n# Run nf-nomad hello pipeline (from\
+    \ server):\n#   cd /opt/nf-test\n#   NXF_VER=25.10.5 NXF_HOME=/opt/nf-work nextflow run hello -c nextflow.config\n\
+    #\n# For rnaseq-nf/nf-core pipelines: run from a CLIENT VM (more RAM, avoids OOM).\n# Client VMs get\
+    \ their own nextflow.config via nomad-client-nf-setup.service.\n#\n# Also write the bootstrap token\
+    \ to /opt/nf-work/.nomad-bootstrap-token (mode 644)\n# so client VMs can read it via the NFS mount\
+    \ for their own nextflow.config setup.\ncat > \"${NF_CONFIG}\" << NFCONFIG\nplugins {\n  id \"nf-nomad@0.4.0-edge3\"\
+    \n}\n\nprocess {\n  executor = \"nomad\"\n  container = \"ubuntu:22.04\"\n}\n\ndocker {\n  enabled\
+    \ = true\n}\n\nnomad {\n  client {\n    address = \"http://127.0.0.1:4646\"\n    token   = \"${TOKEN}\"\
+    \n  }\n  jobs {\n    privileged         = false\n    deleteOnCompletion = false\n    volume = {\n\
+    \      type \"host\"\n      name \"nf-work\"\n    }\n  }\n}\n\nworkDir = \"/opt/nf-work\"\nNFCONFIG\n\
+    \nchmod 600 \"${NF_CONFIG}\"\necho \"[nf-setup] nextflow.config written to ${NF_CONFIG} (token: ${TOKEN:0:8}...)\"\
+    \n\n# Write bootstrap token to NFS share so client VMs can generate their own configs.\n# mode 644:\
+    \ clients mount /opt/nf-work as ubuntu; they read but don't write this file.\ncp /etc/nomad-bootstrap-token\
+    \ /opt/nf-work/.nomad-bootstrap-token\nchmod 644 /opt/nf-work/.nomad-bootstrap-token\necho \"[nf-setup]\
+    \ Bootstrap token written to /opt/nf-work/.nomad-bootstrap-token\"\n"
   path: /usr/local/bin/nomad-nf-setup.sh
   permissions: '0755'
-- content: "# Full cluster-wide access. Equivalent to a management token but\n# expressed as a policy so tokens can be revoked individually.\nnamespace \"*\" {\n  policy       = \"write\"\n  capabilities = [\"alloc-exec\", \"alloc-lifecycle\", \"alloc-node-exec\", \"csi-write-volume\", \"sentinel-override\", \"submit-job\", \"dispatch-job\", \"read-job\", \"list-jobs\", \"read-logs\", \"read-fs\"]\n}\nagent       { policy = \"write\" }\nnode        { policy = \"write\" }\noperator    { policy = \"write\" }\nquota       { policy = \"write\" }\nhost_volume \"*\" { policy = \"write\" }\nplugin      { policy = \"read\"  }\n"
+- content: "# Full cluster-wide access. Equivalent to a management token but\n# expressed as a policy\
+    \ so tokens can be revoked individually.\nnamespace \"*\" {\n  policy       = \"write\"\n  capabilities\
+    \ = [\"alloc-exec\", \"alloc-lifecycle\", \"alloc-node-exec\", \"csi-write-volume\", \"sentinel-override\"\
+    , \"submit-job\", \"dispatch-job\", \"read-job\", \"list-jobs\", \"read-logs\", \"read-fs\"]\n}\n\
+    agent       { policy = \"write\" }\nnode        { policy = \"write\" }\noperator    { policy = \"\
+    write\" }\nquota       { policy = \"write\" }\nhost_volume \"*\" { policy = \"write\" }\nplugin  \
+    \    { policy = \"read\"  }\n"
   path: /etc/nomad-policies/admin-full.hcl.tmpl
-- content: "# Group admin \u2014 full control within the group's namespace, read-only\n# on cluster operator surfaces (to debug allocations).\nnamespace \"__GROUP__\" {\n  policy       = \"write\"\n  capabilities = [\"submit-job\", \"dispatch-job\", \"read-job\", \"list-jobs\", \"read-logs\", \"read-fs\", \"alloc-exec\", \"alloc-lifecycle\"]\n}\nnode     { policy = \"read\" }\nagent    { policy = \"read\" }\noperator { policy = \"read\" }\nhost_volume \"nf-work\"    { policy = \"write\" }\nhost_volume \"minio-data\" { policy = \"read\"  }\n"
+- content: "# Group admin \u2014 full control within the group's namespace, read-only\n# on cluster operator\
+    \ surfaces (to debug allocations).\nnamespace \"__GROUP__\" {\n  policy       = \"write\"\n  capabilities\
+    \ = [\"submit-job\", \"dispatch-job\", \"read-job\", \"list-jobs\", \"read-logs\", \"read-fs\", \"\
+    alloc-exec\", \"alloc-lifecycle\"]\n}\nnode     { policy = \"read\" }\nagent    { policy = \"read\"\
+    \ }\noperator { policy = \"read\" }\nhost_volume \"nf-work\"    { policy = \"write\" }\n# The generated\
+    \ pipeline head job mounts abc-tools for s5cmd and rclone.\n# Without this grant the head job is rejected\
+    \ with a bare 403 at submit,\n# naming neither the volume nor the missing capability.\nhost_volume\
+    \ \"abc-tools\" { policy = \"read\"  }\nhost_volume \"minio-data\" { policy = \"read\"  }\n"
   path: /etc/nomad-policies/group-admin.hcl.tmpl
-- content: "# Group member \u2014 can submit jobs and read their own results in the\n# group's namespace. Cannot exec into containers or fiddle with\n# allocation lifecycle (those are admin operations).\nnamespace \"__GROUP__\" {\n  policy       = \"read\"\n  capabilities = [\"submit-job\", \"dispatch-job\", \"read-job\", \"list-jobs\", \"read-logs\", \"read-fs\"]\n}\nnode  { policy = \"read\" }\nhost_volume \"nf-work\" { policy = \"write\" }\n"
+- content: "# Group member \u2014 can submit jobs and read their own results in the\n# group's namespace.\
+    \ Cannot exec into containers or fiddle with\n# allocation lifecycle (those are admin operations).\n\
+    namespace \"__GROUP__\" {\n  policy       = \"read\"\n  capabilities = [\"submit-job\", \"dispatch-job\"\
+    , \"read-job\", \"list-jobs\", \"read-logs\", \"read-fs\"]\n}\nnode  { policy = \"read\" }\nhost_volume\
+    \ \"nf-work\" { policy = \"write\" }\n# The generated pipeline head job mounts abc-tools for s5cmd\
+    \ and rclone.\n# Without this grant the head job is rejected with a bare 403 at submit,\n# naming\
+    \ neither the volume nor the missing capability.\nhost_volume \"abc-tools\" { policy = \"read\" }\n"
   path: /etc/nomad-policies/member.hcl.tmpl
-- content: "#!/bin/bash\nset -euo pipefail\nTOKEN_FILE=/etc/nomad-bootstrap-token\nexport NOMAD_ADDR=http://127.0.0.1:4646\n\n# Wait for the bootstrap token file (written by nomad-acl-bootstrap.service).\nfor i in $(seq 1 60); do\n  [ -s \"${TOKEN_FILE}\" ] && break\n  sleep 2\ndone\n[ -s \"${TOKEN_FILE}\" ] || { echo \"[base-policies] no bootstrap token\"; exit 1; }\n\nNOMAD_TOKEN=$(awk '/^Secret ID/ { print $NF }' \"${TOKEN_FILE}\")\nexport NOMAD_TOKEN\n\n# admin-full is a static policy (no __GROUP__ placeholder).\n# The token file surviving a snapshot restore does not mean Nomad is ready to\n# accept it: on a restored boot this ran five seconds BEFORE\n# nomad-acl-bootstrap and failed with\n#   Error writing ACL policy: Unexpected response code: 403 (Permission denied)\n# With no retry the unit failed permanently and the deployment's readiness\n# gate could never pass. Wait for the token to be accepted, then apply.\nfor i in $(seq 1 60); do\n  nomad acl token self >/dev/null 2>&1 && break\n\
-    \  sleep 5\ndone\n\nfor i in $(seq 1 30); do\n  if nomad acl policy apply -description \"abc-node admin-full\" \\\n       admin-full /etc/nomad-policies/admin-full.hcl.tmpl; then\n    echo \"[base-policies] admin-full applied\"\n    exit 0\n  fi\n  echo \"[base-policies] apply attempt $i failed; retrying\"\n  sleep 5\ndone\necho \"[base-policies] admin-full could not be applied\" >&2\nexit 1\n"
+- content: "#!/bin/bash\nset -euo pipefail\nTOKEN_FILE=/etc/nomad-bootstrap-token\nexport NOMAD_ADDR=http://127.0.0.1:4646\n\
+    \n# Wait for the bootstrap token file (written by nomad-acl-bootstrap.service).\nfor i in $(seq 1\
+    \ 60); do\n  [ -s \"${TOKEN_FILE}\" ] && break\n  sleep 2\ndone\n[ -s \"${TOKEN_FILE}\" ] || { echo\
+    \ \"[base-policies] no bootstrap token\"; exit 1; }\n\nNOMAD_TOKEN=$(awk '/^Secret ID/ { print $NF\
+    \ }' \"${TOKEN_FILE}\")\nexport NOMAD_TOKEN\n\n# admin-full is a static policy (no __GROUP__ placeholder).\n\
+    # The token file surviving a snapshot restore does not mean Nomad is ready to\n# accept it: on a restored\
+    \ boot this ran five seconds BEFORE\n# nomad-acl-bootstrap and failed with\n#   Error writing ACL\
+    \ policy: Unexpected response code: 403 (Permission denied)\n# With no retry the unit failed permanently\
+    \ and the deployment's readiness\n# gate could never pass. Wait for the token to be accepted, then\
+    \ apply.\nfor i in $(seq 1 60); do\n  nomad acl token self >/dev/null 2>&1 && break\n  sleep 5\ndone\n\
+    \nfor i in $(seq 1 30); do\n  if nomad acl policy apply -description \"abc-node admin-full\" \\\n\
+    \       admin-full /etc/nomad-policies/admin-full.hcl.tmpl; then\n    echo \"[base-policies] admin-full\
+    \ applied\"\n    exit 0\n  fi\n  echo \"[base-policies] apply attempt $i failed; retrying\"\n  sleep\
+    \ 5\ndone\necho \"[base-policies] admin-full could not be applied\" >&2\nexit 1\n"
   path: /usr/local/bin/nomad-apply-base-policies.sh
   permissions: '0755'
 - content: '[Unit]

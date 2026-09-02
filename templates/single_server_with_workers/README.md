@@ -68,12 +68,40 @@ When it finishes, the workbench has seeded accounts ready to use. Follow
 pipeline, open JupyterLab. Set `enableWorkbench false` only to test pipelines
 alone; the access-control story is what this topology exists to show.
 
-> **Set every config value, and do not re-initialise the stack.** Config lives in
-> `Pulumi.<stack>.yaml`. If that file is lost — `pulumi stack rm` followed by
-> `stack init` will do it — the program falls back to defaults, which almost
-> certainly differ from what is deployed. The next `pulumi up` then replaces the
-> server and every VM with it, without warning. Check `pulumi preview` for
-> `to replace` before running `up` on an existing stack.
+> **Treat `up` on an existing stack as a rebuild.** Two separate things make it
+> replace VMs rather than adjust them.
+>
+> First, the provider. It is installed from a GitHub release rather than the
+> Pulumi registry (see [../README.md](../README.md)), and its identity is not
+> stable between invocations, so a second `up` on an unchanged stack still
+> reports `[diff: ~provider]` and replaces every instance and snapshot. Verified
+> on an untouched stack with unchanged config: `+-14 to replace`. This resolves
+> once the registry submission merges.
+>
+> Second, the config. It lives in `Pulumi.<stack>.yaml`, and if that file is lost
+> — `pulumi stack rm` followed by `stack init` will do it — the program falls
+> back to defaults that almost certainly differ from what is deployed. Set every
+> value explicitly, as above, so the file records the whole picture.
+>
+> Run `pulumi preview` before `up` on a stack you care about. Replacing the
+> workers destroys whatever MinIO holds, including the seeded group buckets, and
+> re-provisioning re-runs the seed, so previously claimed slots stop working.
+> To change worker sizing on a cluster you want to keep, resize in place instead:
+>
+> ```bash
+> multipass stop abc-worker-0 && multipass set local.abc-worker-0.cpus=4 \
+>   && multipass set local.abc-worker-0.memory=12G && multipass start abc-worker-0
+> ```
+>
+> That leaves Pulumi's state stale. Record the new size in config, then correct
+> the state to match — `pulumi refresh` does not read VM sizing back from
+> Multipass, so it will not do this for you:
+>
+> ```bash
+> pulumi config set clientCpus 4 && pulumi config set clientMemory 12G
+> pulumi stack export --file s.json    # edit cpus/memory on the worker Instances
+> pulumi stack import --file s.json
+> ```
 
 ## Sizing
 

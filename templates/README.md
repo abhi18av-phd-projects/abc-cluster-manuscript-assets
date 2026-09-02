@@ -1,102 +1,149 @@
 # Templates
 
-Two templates, one per deployment topology the manuscript describes. Both are sanitised for
-publication: every site-specific value is a placeholder in angle brackets, and must be
-substituted before deploying.
+One Pulumi template, `single_node_server_worker`, provisioning a single machine
+that is both Nomad server and worker, with MinIO and tusd as systemd units.
 
-| Template | Nomad mode | Access control | Users | Status |
-|---|---|---|---|---|
-| `single_node_server_worker/` | development, combined server and client | none | 1 | shipped and verified |
-| `single_server_with_workers/` | server and client, persistent | enabled | 2–20 | **not yet ported** |
+## What a reviewer needs
 
-Only the single-node template is shipped here. The multi-user template has not
-been through the same end-to-end verification, and publishing an unverified
-template alongside a paper that claims reproducibility would be the wrong trade.
+- **Multipass** and **Pulumi** on the host machine
+- **Node.js 18 or newer**
+- No account anywhere: the template uses a local Pulumi backend and a vendored
+  provider SDK, so nothing is fetched from a registry at deploy time
 
-Each is a standard Pulumi TypeScript project: `npm install && pulumi up`. Dependencies are
-declared in `package.json`; no `node_modules` or lockfile state ships here. See
-[Provision](../protocol/01-provision.md) for the full path from a bare laptop, including how to
-install the Multipass provider while its
-[registry submission](https://github.com/pulumi/registry/pull/12177) is open.
+```bash
+# 1. Build the provider SDK — see "The provider is not installable from npm" below
+./scripts/setup-provider-sdk.sh
 
-## What differs between them
+# 2. Deploy
+cd templates/single_node_server_worker
+npm install
+pulumi login --local
+pulumi stack init review
+# set the size BEFORE the first `pulumi up` — see the warning below
+pulumi config set cpus 8
+pulumi config set memory 32G
+pulumi config set disk 80G
+pulumi up
+```
 
-`single_node_server_worker/` runs Nomad in development mode on one VM, managed by systemd
-alongside the platform services it needs: MinIO for object storage, tusd for resumable
-ingestion, and optionally Caddy for HTTPS. Nomad itself has no access-control enforcement in
-this mode, so any client that can reach the API port holds full cluster control. It is a single
-fault domain, and it is the right choice for evaluating the platform and for reproducing the
-worked example. It is not intended for sustained use.
+Step 1 is a one-off. It clones the provider at a pinned tag, builds its Node SDK
+and installs it under `vendor/`, which is what `npm install` then resolves.
 
-`single_server_with_workers/` runs a server VM alongside worker VMs, with persistence and
-per-user access control, and deploys `abc-auth-svc` to broker the single login. `single_node_server_worker/`
-does not deploy the broker, because there is no access control to broker.
-
-`single_server_with_workers/` also carries the optional observability stack: metrics, logs and
-traces collection with a dashboard, plus threshold alerts routed to a notification service. It is
-disabled by default and enabled with a single Pulumi config flag, matching the manuscript's
-description of it as an operator option rather than a requirement.
-
-The overlay network is configurable between Tailscale and Nebula. The platform depends only on
-the flat addressing an overlay provides, not on any feature particular to either.
-
-## Not included
-
-A multi-server quorum topology is possible and is deliberately absent here. Quorum brings leader
-election, split-brain recovery and coordinated rolling upgrades, and those presume
-platform-engineering capacity the target setting does not have.
-
-Nothing here provisions an admission engine, a policy engine or an audit ledger.
-The manuscript records their absence as a design decision, and this repository holds that line.
+> **Set the size before the first `pulumi up`.** Changing `cpus`, `memory` or
+> `disk` on a stack that is already deployed is reported by the provider as an
+> in-place update and exits successfully, but the instance is destroyed and not
+> recreated. Recover with `pulumi refresh && pulumi destroy && pulumi up`. Track
+> this against the provider, not the template.
 
 ## Sizing
 
-The default is 4 vCPU / 16 GB, set in `index.ts` and overridable with
-`pulumi config set cpus|memory|disk`. 16 GB is not arbitrary: one nf-core FASTQC
-task requests `Cores 2 / MemoryMB 12288`, because nf-core's `base.config` gives
-`process_low` 12 GB, and the Nextflow head reserves a further 2 GB. Below that,
-every pipeline task fails placement with
-`Dimension "memory" exhausted on 1 nodes`.
+The template defaults to 4 vCPU / 16 GB / 20 GB. That is enough to deploy and to
+run the first two pipeline classes, and it is not enough for the rest — nf-core
+`process_low` alone requests 12 GB, and container images for the larger
+pipelines will not fit in a 20 GB disk.
 
-Capping this with `--config` is less reliable than it looks. The file's contents
-do reach the head — the CLI reads it locally and appends it to the generated
-`nextflow.headjob.config` — but an nf-core pipeline sets `resourceLimits` in its
-own `conf/base.config` and test profile, and that wins. Size the node for the
-pipeline's declared requests rather than trying to cap them from outside.
+Pick the row for the heaviest pipeline you intend to run, and set it before the
+first `pulumi up`.
 
-## Running a pipeline
+| Class | Pipelines | cpus | memory | disk |
+| --- | --- | --- | --- | --- |
+| **A — executor check** | `nextflow-io/hello` | 2 | 8G | 20G |
+| **B — small real workflow** | `nextflow-io/rnaseq-nf` | 4 | 16G | 30G |
+| **C — nf-core baseline** | `nf-core/demo` | 4 | 16G | 40G |
+| **D — full nf-core pipelines** | `nf-core/detaxizer`, `nf-core/viralrecon` | 16 | 96G | 150G |
 
-Two flags are required on a single-node deployment, because both CLI defaults
-assume a multi-node cluster with DNS:
+Class A proves the executor, the object store and the node pool agree. Class B is
+the smallest workflow that is a real workflow. Class C adds nf-core's conventions.
+Class D is production-shaped and is what the manuscript's examples use.
 
-```bash
-abc pipeline run <url> --revision <rev> \
-  --head-pool compute \
-  --head-nomad-addr http://<node-ip>:4646 \
-  --work-dir s3://nf-work/<run>/
+Every pipeline runs with `abc pipeline run` and nothing else. No Nextflow
+configuration files are supplied or required.
+
+### Why class D asks for so much
+
+Class D is sized far above the work it performs, and the reason is worth knowing
+before you conclude the platform is heavy.
+
+Nomad places a task on what it **requests**, not on what it uses, and reserves
+`cores` exclusively. Measured requests against measured usage, the latter read
+from each run's own `pipeline_info/execution_trace_*.txt`:
+
+| Pipeline | Largest request | Actually used (peak) |
+| --- | --- | --- |
+| `nf-core/demo` | 2 cores, 12 GB | < 1 GB |
+| `nf-core/detaxizer` | 12 cores, 80 GB | 0.8 GB, 418 % CPU |
+| `nf-core/viralrecon` | 12 cores, 72 GB | 11.2 GB, 501 % CPU |
+
+detaxizer asks for a hundred times the memory it touches. That request is not
+what the pipeline intends: its `test` profile caps resources through
+`process.resourceLimits`, which is how it passes CI on hosted runners of modest
+size. The cap is not reaching the generated job specification, so the raw
+`conf/base.config` label is used instead. This is a known defect and is being
+tracked; the sizing above is the workaround until it is fixed.
+
+An oversized request is fatal rather than wasteful, because Nomad will not place
+it at all:
+
+```
+Placement Failure
+  * Dimension "memory" exhausted on 1 nodes
 ```
 
-`--head-pool` is needed because the head otherwise targets a `platform` pool
-that no single-node deployment has. `--head-nomad-addr` is needed because
-`NOMAD_ADDR` otherwise reaches the head container as `127.0.0.1:4646`, which it
-cannot route to.
+The job then neither fails nor runs. It waits indefinitely for a node that
+cannot exist, which is the single most confusing failure on a small deployment.
+If you see it, the node is smaller than some process's declared request — check
+`nomad job status <job>` and compare against the table above.
 
-## On Linux: snap-confined Multipass
+## Addons
 
-If `multipass launch` fails with
-`Could not load cloud-init configuration: bad file: /tmp/...`, the provider is
-writing cloud-init to `/tmp`, which a snap-installed Multipass cannot read. Set
-`TMPDIR` to a path under your home directory:
+`cloud-init/` holds the base configuration and a set of addons merged in by
+`index.ts` according to stack configuration. Each is a `#cloud-config` fragment
+merged key by key across `packages`, `bootcmd`, `write_files` and `runcmd`.
 
-```bash
-export TMPDIR="$HOME/mp-tmp" && mkdir -p "$TMPDIR"
+| Addon | Config key | Default | What it adds |
+| --- | --- | --- | --- |
+| `base.yaml` | always | on | Nomad (dev mode), MinIO, tusd as systemd units |
+| `node-pool-addon.yaml` | `enableNodePool` | on | the `compute` node pool, the `abc-apps` namespace, and a boot-time unit that reapplies the namespace |
+| `env-tools-addon.yaml` | `enableEnvTools` | on | pixi and micromamba for `--runtime` jobs |
+| `nextflow-volumes-addon.yaml` | `enableNextflow` | on | host volumes and `s5cmd` for pipeline work |
+| `fx-tusd-hook-addon.yaml` | always | on | the resumable-upload hook as a Nomad job |
+| `obs-addon.yaml` | `observability` | off | metrics, logs, traces and Grafana |
+| `https-addon.yaml` | `enableHttps` | off | Caddy in front of MinIO |
+| `apptainer-driver-addon.yaml` | `enableApptainerDriver` | off | the Apptainer task driver |
+
+Ordering matters: anything a later step needs to exist is written in `bootcmd`,
+because Nomad refuses to start if a declared `host_volume` path is missing, and
+a failed `scripts_user` stage silently skips every addon `runcmd` after it.
+
+## The provider is not installable from npm
+
+`scripts/setup-provider-sdk.sh` exists because the provider cannot currently be
+consumed from the registry.
+
+`@incsteps/pulumi-multipass@0.1.0` on npm ships the SDK's TypeScript sources
+with no `main` field and no compiled JavaScript. `npm install` succeeds, and
+`pulumi preview` then fails with:
+
+```
+node_modules/@incsteps/pulumi-multipass/index.ts:4
+import * as pulumi from "@pulumi/pulumi";
+^^^^^^
+SyntaxError: Cannot use import statement outside a module
 ```
 
-Fixed upstream in incsteps/pulumi-provider-multipass#1; the workaround is only
-needed until that lands.
+The fix is merged upstream as
+[incsteps/pulumi-provider-multipass#2](https://github.com/incsteps/pulumi-provider-multipass/pull/2),
+but it is not yet released: the corrected package is version 0.1.1, and no
+0.1.1 plugin release or npm publish exists. Until both land, the SDK has to be
+built from source, which is what the script does.
 
-## A note on JupyterHub
+The script pins the provider to tag **v0.1.0** rather than tracking `main`. The
+SDK embeds the plugin version it will ask Pulumi to download, so it must name a
+version that has a GitHub release; `main` is already 0.1.1, and asking for a
+plugin that was never released fails with a 404 during `pulumi preview`.
+Override with `PROVIDER_REF=v0.1.1 ./scripts/setup-provider-sdk.sh` once that
+release exists.
 
-JupyterHub is installed separately during host provisioning rather than orchestrated by the
-platform. The platform contributes the login only, so one credential admits a researcher to both
-the command-line client and the notebook. The templates reflect that split.
+**When 0.1.1 is published**, this script and the `file:` dependency in
+`templates/single_node_server_worker/package.json` can both be dropped in favour
+of a normal `"@incsteps/pulumi-multipass": "^0.1.1"` dependency.

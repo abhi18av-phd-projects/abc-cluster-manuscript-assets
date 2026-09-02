@@ -1,0 +1,3 @@
+name: single-server-with-workers
+runtime: nodejs
+description: abc-node multi-node — single_server_with_clients topology (ADR-0029). One Nomad server VM + N client VMs, ACL enabled.

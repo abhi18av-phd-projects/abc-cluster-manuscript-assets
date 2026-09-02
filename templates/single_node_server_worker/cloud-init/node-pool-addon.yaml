@@ -19,6 +19,63 @@
 # A node belongs to exactly one pool, so both must name the same one.
 
 write_files:
+  # Namespaces do not survive, for the same reason platform jobs do not: Nomad
+  # runs here in -dev mode, which discards server state on restart, and the
+  # Pulumi program snapshots after cloud-init, which stops the instance. Applying
+  # the namespace once from runcmd looks like it worked — cloud-init logs
+  # "Successfully applied namespace" — and it is gone by the time a reviewer runs
+  # anything. Observed: 'abc app deploy' failing with
+  #     job "app-..." is in nonexistent namespace "abc-apps"
+  #
+  # The compute node pool needs no equivalent: the client declares node_pool in
+  # its own config, so Nomad recreates the pool on every registration.
+  - path: /usr/local/bin/abc-apply-namespaces
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      export NOMAD_ADDR="${NOMAD_ADDR:-http://127.0.0.1:4646}"
+      for i in $(seq 1 40); do
+        curl -sf "${NOMAD_ADDR}/v1/status/leader" >/dev/null 2>&1 && break
+        sleep 3
+      done
+      nomad namespace apply -description "Scientific web apps deployed with abc app" abc-apps \
+        && echo "namespace abc-apps ready"
+
+  - path: /etc/systemd/system/abc-namespaces.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Apply abc namespaces to Nomad (re-runs each boot; -dev loses state)
+      After=nomad.service
+      Requires=nomad.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/bin/abc-apply-namespaces
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # Nomad -dev fingerprints the loopback interface, so
+  # `unique.network.ip-address` is 127.0.0.1 even though the agent advertises
+  # the real address. The CLI defaults a pipeline head's NOMAD_ADDR to
+  # `http://${attr.unique.network.ip-address}:4646`, so the head container
+  # dials itself and every worker submit fails with:
+  #     Failed to submit <task> -- Cause: java.net.ConnectException:
+  #     Failed to connect to /127.0.0.1:4646
+  # Pinning the client to the default-route interface makes the fingerprint the
+  # node's real address, so `abc pipeline run` needs no --head-nomad-addr.
+  - path: /usr/local/bin/abc-set-nomad-interface
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      IFACE=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+      [ -n "${IFACE:-}" ] || { echo "no default-route interface; leaving Nomad fingerprint alone"; exit 0; }
+      printf 'client {\n  network_interface = "%s"\n}\n' "$IFACE" > /etc/nomad.d/network.hcl
+      echo "nomad client pinned to interface $IFACE"
+
   - path: /etc/nomad.d/node-pool.hcl
     permissions: '0644'
     content: |
@@ -34,6 +91,9 @@ write_files:
       }
 
 runcmd:
+  - /usr/local/bin/abc-set-nomad-interface
+  - systemctl daemon-reload
+  - systemctl enable --now abc-namespaces.service
   - mkdir -p /opt/nomad/pools
 
   # Create the pool before restarting the client into it, so registration lands
@@ -45,17 +105,6 @@ runcmd:
     done
     NOMAD_ADDR=http://127.0.0.1:4646 nomad node pool apply /opt/nomad/pools/compute.nomad.hcl
 
-  # Namespaces the CLI targets. `abc app deploy` submits into abc-apps, which
-  # a stock deployment does not have, so the first app deploy fails with
-  #     job "..." is in nonexistent namespace "abc-apps"
-  - |
-    for i in $(seq 1 30); do
-      curl -sf http://127.0.0.1:4646/v1/status/leader >/dev/null 2>&1 && break
-      sleep 3
-    done
-    NOMAD_ADDR=http://127.0.0.1:4646 nomad namespace apply \
-      -description "Scientific web apps deployed with abc app" abc-apps \
-      && echo "namespace abc-apps ready"
 
   - systemctl restart nomad.service
 

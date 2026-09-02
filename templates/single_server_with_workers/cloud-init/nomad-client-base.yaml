@@ -1,0 +1,136 @@
+#cloud-config
+packages:
+- docker.io
+- wget
+- unzip
+- curl
+- nfs-common
+runcmd:
+- mkdir -p /opt/abc/tools/bin /opt/nf-work/bin
+- "S5CMD_VERSION=2.3.0\nif curl -fsSL \"https://github.com/peak/s5cmd/releases/download/v${S5CMD_VERSION}/s5cmd_${S5CMD_VERSION}_Linux-64bit.tar.gz\" -o /tmp/s5cmd.tgz \\\n   && tar -xzf /tmp/s5cmd.tgz -C /tmp s5cmd; then\n  install -m 0755 /tmp/s5cmd /opt/abc/tools/bin/s5cmd\n  install -m 0755 /tmp/s5cmd /opt/nf-work/bin/s5cmd\n  rm -f /tmp/s5cmd.tgz /tmp/s5cmd\n  echo \"s5cmd staged into abc-tools and nf-work\"\nelse\n  echo \"WARNING: s5cmd download failed; pipeline runs will fail at S3 staging\" >&2\nfi"
+- wget -q https://releases.hashicorp.com/nomad/1.11.2/nomad_1.11.2_linux_amd64.zip -O /tmp/nomad.zip
+- unzip /tmp/nomad.zip -d /usr/local/bin/
+- chmod +x /usr/local/bin/nomad
+- rm /tmp/nomad.zip
+- mkdir -p /opt/nomad/data /opt/nomad/plugins /etc/nomad.d
+- systemctl enable --now docker
+- mkdir -p /opt/minio-data
+- mkdir -p /opt/nf-work
+- systemctl daemon-reload
+- systemctl enable nomad
+- systemctl start nomad
+- systemctl enable nomad-client-nf-setup
+- systemctl start --no-block nomad-client-nf-setup
+- systemctl enable abc-worker-extras.service
+- systemctl start --no-block abc-worker-extras.service
+write_files:
+- content: "plugin_dir = \"/opt/nomad/plugins\"\n\nplugin \"docker\" {\n  config {\n    volumes {\n      enabled = true\n    }\n    allow_privileged = true\n  }\n}\n\nplugin \"nomad-driver-podman\" {\n  config {\n    socket_path = \"unix:///run/podman/podman.sock\"\n  }\n}\n"
+  path: /etc/nomad.d/drivers.hcl
+- content: "data_dir = \"/opt/nomad/data\"\n\nbind_addr = \"0.0.0.0\"\n\nclient {\n  enabled = true\n}\n\nacl {\n  enabled = true\n}\n\ntelemetry {\n  publish_allocation_metrics = true\n  publish_node_metrics       = true\n  prometheus_metrics         = true\n}\n"
+  path: /etc/nomad.d/client-base.hcl
+- content: "client {\n  # The CLI generates user jobs with node_pool = \"compute\". A client that does\n  # not declare it registers into `default`, and the first `abc job run` fails\n  # with: job \"...\" is in nonexistent node pool \"compute\".\n  node_pool = \"compute\"\n\n  # abc-tools carries the plugin tool binaries (s5cmd, rclone). The pipeline\n  # generator mounts it at /nxf-work and puts /nxf-work/bin on PATH for the head\n  # and every worker, so tasks MOUNT these tools rather than downloading them.\n  # Without this volume a pipeline fails at S3 staging.\n  host_volume \"abc-tools\" {\n    path      = \"/opt/abc/tools\"\n    read_only = true\n  }\n}\n\nclient {\n  host_volume \"nf-work\" {\n    path      = \"/opt/nf-work\"\n    read_only = false\n  }\n\n  # MinIO data volume \u2014 used by the minio.nomad.hcl service job.\n  # Provides persistent S3-compatible object storage for FusionFS workdir testing.\n  # Constrained to client-0 in the Nomad job (single-node persistence).\n\
+    \  host_volume \"minio-data\" {\n    path      = \"/opt/minio-data\"\n    read_only = false\n  }\n}\n"
+  path: /etc/nomad.d/host-volumes.hcl
+- content: "#!/bin/bash\nset -euo pipefail\n\nTOKEN_NFS=/opt/nf-work/.nomad-bootstrap-token\nNF_DIR=/opt/nf-test\nNF_CONFIG=\"${NF_DIR}/nextflow.config\"\nCLIENT_JOIN_HCL=/etc/nomad.d/client-join.hcl\n\necho \"[client-nf-setup] Waiting for NFS token at ${TOKEN_NFS}...\"\nfor i in $(seq 1 120); do\n  if [ -f \"${TOKEN_NFS}\" ] && [ -s \"${TOKEN_NFS}\" ]; then\n    echo \"[client-nf-setup] Token file found.\"\n    break\n  fi\n  sleep 5\ndone\n\nif [ ! -f \"${TOKEN_NFS}\" ]; then\n  echo \"[client-nf-setup] ERROR: token not found at ${TOKEN_NFS} after 10 minutes\"\n  exit 1\nfi\n\nTOKEN=$(awk '/^Secret ID/ { print $NF }' \"${TOKEN_NFS}\")\nif [ -z \"${TOKEN}\" ]; then\n  echo \"[client-nf-setup] ERROR: could not extract Secret ID from ${TOKEN_NFS}\"\n  exit 1\nfi\n\n# Extract the server address from client-join.hcl: retry_join = [\"<host>:4647\"]\n# This is a multipass DNS name rather than an IP, so that replacing the server\n# does not strand the client on a stale address.\nSERVER_IP=$(grep\
+    \ -oP '(?<=\\[\")[^\":]+' \"${CLIENT_JOIN_HCL}\" | head -1)\nif [ -z \"${SERVER_IP}\" ]; then\n  echo \"[client-nf-setup] ERROR: could not extract server IP from ${CLIENT_JOIN_HCL}\"\n  exit 1\nfi\n\nmkdir -p \"${NF_DIR}\"\n\ncat > \"${NF_CONFIG}\" << NFCONFIG\nplugins {\n  id \"nf-nomad@0.4.0-edge3\"\n}\n\nprocess {\n  executor = \"nomad\"\n  cpus     = 1\n  memory   = \"2.GB\"\n  time     = \"2.h\"\n  withName: '.*' {\n    cpus   = 1\n    memory = \"2.GB\"\n    time   = \"2.h\"\n  }\n}\n\ndocker {\n  enabled = true\n}\n\nnomad {\n  client {\n    address = \"http://${SERVER_IP}:4646\"\n    token   = \"${TOKEN}\"\n  }\n  jobs {\n    privileged         = false\n    deleteOnCompletion = false\n    volume = {\n      type \"host\"\n      name \"nf-work\"\n    }\n  }\n}\n\nworkDir = \"/opt/nf-work\"\nNFCONFIG\n\nchmod 600 \"${NF_CONFIG}\"\nchown ubuntu:ubuntu \"${NF_CONFIG}\"\necho \"[client-nf-setup] nextflow.config written to ${NF_CONFIG} (server: ${SERVER_IP}, token: ${TOKEN:0:8}...)\"\
+    \necho \"[client-nf-setup] Run pipelines from this VM:\"\necho \"  NXF_VER=25.10.5 NXF_HOME=/opt/nf-work nextflow run hello -c ${NF_CONFIG}\"\n"
+  path: /usr/local/bin/nomad-client-nf-setup.sh
+  permissions: '0755'
+- content: '[Unit]
+
+    Description=Generate Nextflow nf-nomad config on client VM after NFS token available
+
+    After=nomad.service
+
+
+    [Service]
+
+    Type=oneshot
+
+    RemainAfterExit=yes
+
+    ExecStart=/usr/local/bin/nomad-client-nf-setup.sh
+
+    User=ubuntu
+
+
+    [Install]
+
+    WantedBy=multi-user.target
+
+    '
+  path: /etc/systemd/system/nomad-client-nf-setup.service
+- content: '[Unit]
+
+    Description=Nomad Client Agent (abc-node multi-node)
+
+    Documentation=https://developer.hashicorp.com/nomad/docs
+
+    Wants=network-online.target docker.service remote-fs.target
+
+    After=network-online.target docker.service remote-fs.target
+
+
+    [Service]
+
+    ExecStart=/usr/local/bin/nomad agent -config=/etc/nomad.d/ -log-level=INFO
+
+    ExecReload=/bin/kill -HUP $MAINPID
+
+    KillMode=process
+
+    KillSignal=SIGINT
+
+    LimitNOFILE=65536
+
+    LimitNPROC=infinity
+
+    Restart=on-failure
+
+    RestartSec=2
+
+    TasksMax=infinity
+
+
+    [Install]
+
+    WantedBy=multi-user.target
+
+    '
+  path: /etc/systemd/system/nomad.service
+- content: "#!/bin/bash\n# Runtimes and tools that are NOT needed for the node to register with Nomad.\n# multipass gives each launch a fixed 900s budget and waits for cloud-init to\n# finish; leaving these on the boot path pushed workers past it, so `pulumi up`\n# failed on healthy VMs. Nomad is restarted at the end so the extra task\n# drivers fingerprint once they exist.\nset -uo pipefail\nexport DEBIAN_FRONTEND=noninteractive\n# Runtime dependencies for the drivers installed below. Kept off the\n# boot path because cloud-init's package stage counts against the\n# provider's fixed launch timeout.\napt-get update -qq >/dev/null 2>&1\napt-get install -y -qq podman fuse2fs libfuse2t64 libglib2.0-0t64 libseccomp2 squashfs-tools >/dev/null 2>&1\nRCLONE_VERSION=1.68.2\nif curl -fsSL \"https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip\" -o /tmp/rclone.zip \\\n   && unzip -oq /tmp/rclone.zip -d /tmp/rclone; then\n  install -m 0755 /tmp/rclone/rclone-v${RCLONE_VERSION}-linux-amd64/rclone\
+    \ /opt/abc/tools/bin/rclone\n  rm -rf /tmp/rclone /tmp/rclone.zip\n  echo \"rclone staged into abc-tools\"\nelse\n  echo \"WARNING: rclone download failed\" >&2\nfi\nwget -q https://releases.hashicorp.com/nomad-driver-podman/0.5.2/nomad-driver-podman_0.5.2_linux_amd64.zip -O /tmp/nomad-driver-podman.zip\nunzip -o /tmp/nomad-driver-podman.zip nomad-driver-podman -d /opt/nomad/plugins/\nchmod +x /opt/nomad/plugins/nomad-driver-podman\nrm /tmp/nomad-driver-podman.zip\nsystemctl enable --now podman.socket\nwget -q https://github.com/apptainer/apptainer/releases/download/v1.3.4/apptainer_1.3.4_amd64.deb -O /tmp/apptainer.deb\napt-get install -y /tmp/apptainer.deb\nrm /tmp/apptainer.deb\nln -sf /usr/bin/apptainer /usr/local/bin/singularity\nwget -q https://download.bell-sw.com/java/21.0.7+9/bellsoft-jdk21.0.7+9-linux-amd64.deb -O /tmp/liberica-jdk21.deb\napt-get install -y /tmp/liberica-jdk21.deb\nrm /tmp/liberica-jdk21.deb\nmkdir -p /opt/nextflow /opt/nf-test\ncurl -qL https://get.nextflow.io\
+    \ -o /opt/nextflow/nextflow\nchmod +x /opt/nextflow/nextflow\nln -sf /opt/nextflow/nextflow /usr/local/bin/nextflow\nchown -R ubuntu:ubuntu /opt/nextflow /opt/nf-test\nsystemctl restart nomad || true\ntouch /var/lib/abc-worker-extras-done\necho 'worker extras installed'\n"
+  path: /usr/local/bin/abc-worker-extras
+  permissions: '0755'
+- content: '[Unit]
+
+    Description=Install worker runtimes not required for Nomad registration
+
+    After=network-online.target nomad.service
+
+    Wants=network-online.target
+
+    ConditionPathExists=!/var/lib/abc-worker-extras-done
+
+
+    [Service]
+
+    Type=oneshot
+
+    RemainAfterExit=yes
+
+    TimeoutStartSec=1800
+
+    ExecStart=/usr/local/bin/abc-worker-extras
+
+    StandardOutput=journal+console
+
+
+    [Install]
+
+    WantedBy=multi-user.target
+
+    '
+  path: /etc/systemd/system/abc-worker-extras.service
+  permissions: '0644'

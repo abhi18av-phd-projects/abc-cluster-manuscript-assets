@@ -4,3 +4,6 @@ Pulumi.*.yaml
 .pulumi/
 *.log
 .DS_Store
+sdk/nodejs
+vendor/
+node_modules/

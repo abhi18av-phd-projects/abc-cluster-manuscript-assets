@@ -193,7 +193,7 @@ write_files:
           editable: false
 
   # ── Grafana dashboard provisioning ───────────────────────────────────────────
-  - path: /opt/grafana/provisioning/dashboards/single-node.yaml
+  - path: /opt/grafana/provisioning/dashboards/abc-node.yaml
     content: |
       apiVersion: 1
       providers:

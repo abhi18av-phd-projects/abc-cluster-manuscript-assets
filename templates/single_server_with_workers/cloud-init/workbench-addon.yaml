@@ -1,0 +1,228 @@
+#cloud-config
+packages:
+- git
+- curl
+- unzip
+runcmd:
+- systemctl daemon-reload
+- systemctl enable abc-workbench-install.service
+write_files:
+- content: 'export PATH=/usr/local/go/bin:$PATH
+
+    '
+  path: /etc/profile.d/go.sh
+  permissions: '0644'
+- content: "#!/bin/bash\n# Build abc-auth-svc from source into /opt/abc-auth-svc/.\nset -euo pipefail\nexport PATH=/usr/local/go/bin:$PATH\nGO_VERSION=${GO_VERSION:-1.27.0}\nif ! command -v go >/dev/null 2>&1; then\n  curl -fsSL \"https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz\" -o /tmp/go.tgz\n  rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz\nfi\nrm -rf /tmp/abc-auth-svc\ngit clone --depth 1 https://github.com/abc-cluster/abc-auth-svc.git /tmp/abc-auth-svc\nmkdir -p /opt/abc-auth-svc\ncd /tmp/abc-auth-svc\n# Module downloads fail intermittently while the rest of the workbench\n# installs concurrently; observed once in three provisions. Retry rather\n# than leave the node without its credential broker.\nfor attempt in 1 2 3; do\n  if go build -trimpath -o /opt/abc-auth-svc/abc-auth-svc .; then break; fi\n  echo \"go build attempt $attempt failed; retrying\"\n  sleep 10\ndone\n[ -x /opt/abc-auth-svc/abc-auth-svc ] || { echo \"auth-svc build failed after\
+    \ 3 attempts\"; exit 1; }\n/opt/abc-auth-svc/abc-auth-svc -version || true\necho \"abc-auth-svc built\"\n"
+  path: /usr/local/bin/abc-install-authsvc
+  permissions: '0755'
+- content: "#!/bin/bash\n# PocketBase holds workbench slot state. Published as a static binary.\nset -euo pipefail\nPB_VERSION=${PB_VERSION:-0.23.4}\ncommand -v pocketbase >/dev/null 2>&1 && { echo \"pocketbase present\"; exit 0; }\ncurl -fsSL -o /tmp/pb.zip \\\n  \"https://github.com/pocketbase/pocketbase/releases/download/v${PB_VERSION}/pocketbase_${PB_VERSION}_linux_amd64.zip\"\nunzip -o -q /tmp/pb.zip -d /tmp/pb && install -m 0755 /tmp/pb/pocketbase /usr/local/bin/pocketbase\nrm -rf /tmp/pb /tmp/pb.zip\nmkdir -p /opt/abc/pb_data\necho \"pocketbase installed\"\n"
+  path: /usr/local/bin/abc-install-pocketbase
+  permissions: '0755'
+- content: "#!/bin/bash\n# JupyterHub with the Nomad spawner, so a notebook is scheduled as a\n# Nomad job like any other workload rather than run beside the hub.\n#\n# The venv is built on Python 3.10 deliberately. jupyterhub-nomad-spawner\n# declares Requires-Python >=3.10,<3.11, and Ubuntu 24.04 ships 3.12, so\n# the distro interpreter resolves only ancient spawner releases:\n#   ERROR: Could not find a version that satisfies the requirement\n#          jupyterhub-nomad-spawner>=0.4.0 (from versions: 0.0.0, 0.0.4, 0.1.0)\n# Drop the pin and the 3.10 dependency together once the spawner supports\n# a newer interpreter.\nset -euo pipefail\nPY=python3.10\nif ! command -v $PY >/dev/null 2>&1; then\n  export DEBIAN_FRONTEND=noninteractive\n  apt-get install -y -qq software-properties-common >/dev/null\n  add-apt-repository -y ppa:deadsnakes/ppa >/dev/null 2>&1\n  apt-get update -qq >/dev/null\n  apt-get install -y -qq python3.10 python3.10-venv python3.10-dev >/dev/null\nfi\n$PY -m venv /opt/jupyterhub\n\
+    /opt/jupyterhub/bin/pip install --quiet --upgrade pip\n/opt/jupyterhub/bin/pip install --quiet jupyterhub jupyterlab notebook \"jupyterhub-nomad-spawner>=0.4.0\" jhub-remote-user-authenticator\nnpm install -g --silent configurable-http-proxy\nmkdir -p /etc/jupyterhub /data/jupyterhub\necho \"jupyterhub installed\"\n"
+  path: /usr/local/bin/abc-install-jupyterhub
+  permissions: '0755'
+- content: '# Generated at provision time by abc-workbench-secrets.
+
+    # Secrets are read from the environment only, never from flags.
+
+    '
+  path: /etc/abc/workbench.env
+  permissions: '0640'
+- content: '#!/bin/bash
+
+    # Generate the per-deployment secrets the workbench services share.
+
+    # Regenerating them invalidates existing sessions, so only generate once.
+
+    set -euo pipefail
+
+    mkdir -p /etc/abc
+
+    f=/etc/abc/workbench.env
+
+    grep -q SESSION_SECRET "$f" 2>/dev/null && { echo "secrets present"; exit 0; }
+
+    gen() { head -c 32 /dev/urandom | base64 | tr -d ''\n=''; }
+
+    cat > "$f" <<ENV
+
+    SESSION_SECRET=$(gen)
+
+    PB_ADMIN_PASSWORD=$(gen)
+
+    OPERATOR_TOKEN=$(gen)
+
+    ENV
+
+    chmod 0640 "$f"
+
+    echo "workbench secrets generated"
+
+    '
+  path: /usr/local/bin/abc-workbench-secrets
+  permissions: '0755'
+- content: '#!/bin/bash
+
+    # Report which workbench components are present. Printed at the end of
+
+    # provisioning so a half-built node is visible rather than silent.
+
+    ok=0; bad=0
+
+    chk() { if eval "$2"; then echo "  ok      $1"; ok=$((ok+1)); else echo "  MISSING $1"; bad=$((bad+1)); fi; }
+
+    echo "WORKBENCH components:"
+
+    chk "pocketbase"   "command -v pocketbase >/dev/null"
+
+    chk "jupyterhub"   "[ -x /opt/jupyterhub/bin/jupyterhub ]"
+
+    chk "abc-auth-svc" "[ -x /opt/abc-auth-svc/abc-auth-svc ]"
+
+    chk "secrets"      "grep -q SESSION_SECRET /etc/abc/workbench.env 2>/dev/null"
+
+    echo "WORKBENCH: $ok present, $bad missing"
+
+    '
+  path: /usr/local/bin/abc-workbench-status
+  permissions: '0755'
+- content: "# JupyterHub for the ABC-cluster workbench.\n#\n# The hub binds to loopback only. abc-auth-svc is the sole public path: it\n# validates the session and forwards the authenticated identity in Remote-User,\n# so the hub trusts that header rather than authenticating again.\nimport os\n\nc = get_config()  # noqa: F821\n\nc.JupyterHub.bind_url = \"http://127.0.0.1:15000\"\nc.JupyterHub.hub_bind_url = \"http://127.0.0.1:15001\"\nc.JupyterHub.cleanup_servers = False\n\ntry:\n    from jhub_remote_user_authenticator.remote_user_auth import RemoteUserAuthenticator  # noqa: F401\n    c.JupyterHub.authenticator_class = \"remote_user\"\nexcept Exception:\n    # Falls back only because the hub is unreachable except through the broker.\n    c.JupyterHub.authenticator_class = \"dummy\"\n\nc.Authenticator.allow_all = True\nc.Authenticator.admin_users = {\"admin\"}\n\n# Notebooks are scheduled as Nomad jobs, like every other workload here.\nc.JupyterHub.spawner_class = \"nomad-spawner\"\nc.NomadSpawner.nomad_addr\
+    \ = os.environ.get(\"NOMAD_ADDR\", \"http://127.0.0.1:4646\")\nc.NomadSpawner.nomad_token = os.environ.get(\"NOMAD_TOKEN\", \"\")\nc.NomadSpawner.datacenters = [os.environ.get(\"CLUSTER_DATACENTER\", \"dc1\")]\nc.NomadSpawner.mem_limit = \"2G\"\nc.NomadSpawner.cpu_limit = 1000\n\nc.JupyterHub.services = []\nc.ConfigurableHTTPProxy.should_start = True\nc.ConfigurableHTTPProxy.api_url = \"http://127.0.0.1:15002\"\n"
+  path: /etc/jupyterhub/jupyterhub_config.py
+  permissions: '0644'
+- content: '[Unit]
+
+    Description=PocketBase (workbench slot store)
+
+    After=network-online.target
+
+    Wants=network-online.target
+
+
+    [Service]
+
+    ExecStart=/usr/local/bin/pocketbase serve --http 127.0.0.1:8091 --dir /opt/abc/pb_data
+
+    Restart=always
+
+    RestartSec=3
+
+
+    [Install]
+
+    WantedBy=multi-user.target
+
+    '
+  path: /etc/systemd/system/abc-pocketbase.service
+  permissions: '0644'
+- content: '[Unit]
+
+    Description=JupyterHub (ABC-cluster workbench)
+
+    After=network-online.target
+
+    Wants=network-online.target
+
+
+    [Service]
+
+    EnvironmentFile=-/etc/abc/workbench.env
+
+    EnvironmentFile=-/etc/abc/workbench-cluster.env
+
+    Environment=PATH=/opt/jupyterhub/bin:/usr/local/bin:/usr/bin:/bin
+
+    ExecStart=/opt/jupyterhub/bin/jupyterhub -f /etc/jupyterhub/jupyterhub_config.py
+
+    WorkingDirectory=/data/jupyterhub
+
+    Restart=always
+
+    RestartSec=5
+
+
+    [Install]
+
+    WantedBy=multi-user.target
+
+    '
+  path: /etc/systemd/system/jupyterhub.service
+  permissions: '0644'
+- content: '[Unit]
+
+    Description=abc-auth-svc (workbench forward-auth and credential broker)
+
+    After=abc-pocketbase.service jupyterhub.service
+
+    Wants=abc-pocketbase.service
+
+
+    [Service]
+
+    # Secrets come from the environment only, never from flags, and the service
+
+    # registers each one with its log redactor.
+
+    EnvironmentFile=-/etc/abc/workbench.env
+
+    EnvironmentFile=-/etc/abc/workbench-cluster.env
+
+    ExecStart=/opt/abc-auth-svc/abc-auth-svc
+
+    Restart=always
+
+    RestartSec=3
+
+
+    [Install]
+
+    WantedBy=multi-user.target
+
+    '
+  path: /etc/systemd/system/abc-auth-svc.service
+  permissions: '0644'
+- content: "#!/bin/bash\n# Install every workbench component. Runs as a systemd oneshot AFTER boot\n# rather than from cloud-init, because these installs take several minutes and\n# cloud-init's package stage runs before runcmd \u2014 putting them inline delayed\n# the Nomad ACL bootstrap past its readiness window and failed the deployment.\nset -uo pipefail\nexport DEBIAN_FRONTEND=noninteractive\napt-get update -qq >/dev/null 2>&1\napt-get install -y -qq python3-venv python3-pip nodejs npm sqlite3 >/dev/null 2>&1\n/usr/local/bin/abc-workbench-secrets   || echo \"WORKBENCH secrets step failed\"\n/usr/local/bin/abc-install-pocketbase  || echo \"WORKBENCH pocketbase step failed\"\n/usr/local/bin/abc-install-jupyterhub  || echo \"WORKBENCH jupyterhub step failed\"\n/usr/local/bin/abc-install-authsvc     || echo \"WORKBENCH auth-svc step failed\"\nsystemctl daemon-reload\nsystemctl enable --now abc-pocketbase.service || echo \"WORKBENCH pocketbase service failed\"\n/usr/local/bin/abc-workbench-status\n\
+    touch /var/lib/abc-workbench-installed\n"
+  path: /usr/local/bin/abc-workbench-install
+  permissions: '0755'
+- content: '[Unit]
+
+    Description=Install ABC-cluster workbench components
+
+    After=network-online.target
+
+    Wants=network-online.target
+
+    ConditionPathExists=!/var/lib/abc-workbench-installed
+
+
+    [Service]
+
+    Type=oneshot
+
+    # Started by the Pulumi program once every instance is up, never from
+
+    # cloud-init. This install is disk- and network-heavy and runs for minutes;
+
+    # left on the boot path it starved concurrently launching workers, which the
+
+    # provider then failed on its fixed 900s launch budget.
+
+    RemainAfterExit=yes
+
+    TimeoutStartSec=2400
+
+    ExecStart=/usr/local/bin/abc-workbench-install
+
+    StandardOutput=journal+console
+
+
+    [Install]
+
+    WantedBy=multi-user.target
+
+    '
+  path: /etc/systemd/system/abc-workbench-install.service
+  permissions: '0644'

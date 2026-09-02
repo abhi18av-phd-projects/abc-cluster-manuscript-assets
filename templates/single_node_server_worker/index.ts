@@ -1,5 +1,5 @@
 import * as pulumi from "@pulumi/pulumi";
-import * as multipass from "@pulumi/multipass";
+import * as multipass from "@incsteps/pulumi-multipass";
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
@@ -222,16 +222,20 @@ export const alloyUI          = enableObservability
     ? pulumi.interpolate`http://${abcNode.ipv4}:12345`
     : pulumi.output("(set observability=true to enable)");
 
-// A ready-to-import CLI context for this deployment. The CLI is configured by
-// importing a context file rather than by assembling one flag at a time, so
-// write this out and import it:
+// A ready-to-import CLI context for this deployment, so a reviewer can go
+// straight from `pulumi up` to running commands:
 //
 //   pulumi stack output abcContext --show-secrets > abc-context.yaml
 //   abc auth context add lab --from-file ./abc-context.yaml
+//   abc auth context use lab && abc doctor
 //
-// The credentials below are the template's built-in development defaults. They
-// are not secrets, and this deployment is not intended to be reachable beyond
-// the host running it.
+// head_pool and worker_pool matter as much as the address. Without them the CLI
+// falls back to build-time defaults — "platform" for a pipeline head, "default"
+// for an app — and neither pool exists on a single node, so every submission
+// fails placement until the reviewer discovers --head-pool and --node-pool.
+//
+// The credentials are the template's development defaults. They are not secrets
+// and this deployment is not intended to be reachable beyond its host.
 export const abcContext = pulumi.interpolate`version: "1.0"
 active_context: lab
 contexts:
@@ -243,10 +247,6 @@ contexts:
       services:
         nomad:
           addr: http://${abcNode.ipv4}:4646
-          # Without these the CLI falls back to build-time defaults —
-          # "platform" for a pipeline head, "default" for an app — and neither
-          # pool exists on a single node, so every submission fails placement
-          # until --head-pool / --node-pool are discovered.
           head_pool: compute
           worker_pool: compute
         minio:

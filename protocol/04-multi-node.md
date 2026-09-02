@@ -10,8 +10,16 @@ scheduled onto a worker that is a distinct Nomad node, which is the point.
 
 ## 1. Provision
 
-Follow the template README. For the pipelines below, two workers at
-4 vCPU / 12 GB each is enough.
+Follow the template README, and set the worker sizing explicitly. Two workers at
+4 vCPU / 12 GB each is enough for the pipelines below. The template's defaults
+are 2 vCPU / 4 GB, which runs `hello` but is under what `rnaseq-nf` and
+`nf-core/demo` request, so leaving them unset produces a placement failure that
+looks like a cluster fault:
+
+```bash
+pulumi config set clientCpus 4
+pulumi config set clientMemory 12G
+```
 
 Confirm both workers registered before going further — a pipeline whose workers
 cannot place will wait indefinitely rather than fail:
@@ -228,11 +236,43 @@ Hello world!
 Hola world!
 ```
 
-| Pipeline | Processes | Result |
-| --- | ---: | --- |
-| `nextflow-io/hello` | 4 | completed, 64 s |
-| `nextflow-io/rnaseq-nf` | 4 | completed — INDEX, FASTQC, QUANT, MULTIQC |
-| `nf-core/demo` 1.2.0 | 8 | `Pipeline completed successfully` |
+All three were re-run end to end from a claimed member account on the clean
+deployment, with the workers at the sizing this document recommends:
+
+| Pipeline | Processes | worker-0 | worker-1 | Result |
+| --- | ---: | ---: | ---: | --- |
+| `nextflow-io/hello` | 4 | 1 | 3 | completed, 64 s |
+| `nextflow-io/rnaseq-nf` | 4 | 4 | 0 | completed — INDEX, FASTQC, QUANT, MULTIQC |
+| `nf-core/demo` 1.2.0 | 8 | 4 | 4 | `Pipeline completed successfully` |
+
+Counts are process allocations, excluding each pipeline's head job. `rnaseq-nf`
+packing onto one worker is not a fault. Nomad bin-packs, and that pipeline's
+graph is mostly sequential — `INDEX` then `QUANT`, with `FASTQC` alongside and
+`MULTIQC` last — so rarely more than two processes are runnable at once and a
+4 vCPU worker absorbs them. `demo` spreads because three samples fan out at the
+same time. Distribution follows concurrency, not instruction.
+
+### Checking placement yourself
+
+`nomad job status` will not answer this. The executor purges each child job when
+its process finishes, so by the time a pipeline ends only the head job remains
+and every task appears to have run on the head's node. Read the allocations
+instead, which outlive the jobs:
+
+```bash
+TOKEN=$(multipass exec abc-server -- sudo awk '/^Secret ID/ {print $NF}' /etc/nomad-bootstrap-token)
+multipass exec abc-server -- sudo curl -s -H "X-Nomad-Token: $TOKEN" \
+  "http://127.0.0.1:4646/v1/allocations?namespace=<su-group>" |
+  python3 -c 'import sys,json,collections
+d=json.load(sys.stdin)
+c=collections.Counter(a["NodeName"] for a in d)
+[print(f"  {n}: {c[n]} allocations") for n in sorted(c)]'
+```
+
+```
+  abc-worker-0: 12 allocations
+  abc-worker-1: 7 allocations
+```
 
 Each process is submitted as its own Nomad job:
 

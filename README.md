@@ -66,4 +66,8 @@ deploying.
 
 ## Licence
 
-Apache 2.0. See [LICENSE](LICENSE).
+Eclipse Public License 2.0. See [LICENSE](LICENSE); copyright holders are listed in
+[NOTICE](NOTICE).
+
+The Multipass provider described above is a separate artefact under its own
+Apache 2.0 licence.

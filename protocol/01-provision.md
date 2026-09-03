@@ -40,6 +40,30 @@ pulumi plugin ls | grep multipass
 If the registry submission has merged, `pulumi plugin install resource multipass v0.1.0`
 resolves without the `--server` flag.
 
+### On Linux, if Multipass is a snap
+
+Set `TMPDIR` to a non-hidden directory under your home directory, in the shell you
+run `pulumi` from. This applies to **both** topologies below:
+
+```bash
+mkdir -p ~/abc-pulumi-tmp && export TMPDIR=~/abc-pulumi-tmp
+```
+
+The provider writes each instance's merged cloud-init to a temporary file and
+passes the path to `multipass launch`. Snap confinement grants the snap
+`@{HOME}/[^.]**` — everything under the home directory *except* hidden paths —
+and nothing under `/tmp`. Without this, every launch fails on:
+
+```
+Could not load cloud-init configuration: bad file: /tmp/multipass-cloudinit-<n>.yaml
+Please ensure that Multipass can read it.
+```
+
+The message names the file, but the file is valid; it is the location that cannot
+be read. Note the `[^.]` in that rule: a hidden directory such as
+`~/.abc-pulumi-tmp` fails in exactly the same way, so the directory must not start
+with a dot. macOS is unaffected, since Multipass is not confined there.
+
 ## Topology A — single-node
 
 One VM, Nomad in development mode as a combined server and client, with no access-control

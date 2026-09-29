@@ -2,10 +2,11 @@
   "name": "single-node-server-worker",
   "version": "1.0.0",
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "postinstall": "node ../../scripts/fix-provider-sdk.cjs"
   },
   "dependencies": {
-    "@incsteps/pulumi-multipass": "file:../../vendor/pulumi-multipass-sdk",
+    "@incsteps/pulumi-multipass": "0.2.0",
     "@pulumi/pulumi": "^3.0.0",
     "js-yaml": "^4.1.0"
   },

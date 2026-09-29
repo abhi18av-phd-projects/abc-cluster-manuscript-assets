@@ -11,8 +11,10 @@ because it runs Nomad without ACLs.
 
 - **Multipass** and **Pulumi** on the host
 - **Node.js 18 or newer**
-- The provider SDK built once: `./scripts/setup-provider-sdk.sh` from the
-  repository root (see [../README.md](../README.md) for why)
+- Nothing to build by hand: `npm install` fetches the provider SDK from npm and
+  patches it, and the first `pulumi up` fetches the plugin binary (see
+  [../README.md](../README.md#provider-version) for why the version is pinned to
+  0.2.0 and what the patch is for)
 
 ### If Multipass is installed as a snap
 

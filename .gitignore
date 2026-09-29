@@ -5,5 +5,3 @@ Pulumi.*.yaml
 *.log
 .DS_Store
 sdk/nodejs
-vendor/
-node_modules/

@@ -7,14 +7,14 @@ that is both Nomad server and worker, with MinIO and tusd as systemd units.
 
 - **Multipass** and **Pulumi** on the host machine
 - **Node.js 18 or newer**
-- No account anywhere: the template uses a local Pulumi backend and a vendored
-  provider SDK, so nothing is fetched from a registry at deploy time
+- No account anywhere: the template uses a local Pulumi backend. The provider SDK
+  comes from public npm and its plugin binary from the provider's GitHub
+  releases, so the only thing needed is network access on the first deploy
+- `npm install` must be allowed to run its `postinstall` step, which repairs a
+  packaging defect in every published version of the provider SDK — see
+  **Provider version** below
 
 ```bash
-# 1. Build the provider SDK — see "The provider is not installable from npm" below
-./scripts/setup-provider-sdk.sh
-
-# 2. Deploy
 cd templates/single_node_server_worker
 npm install
 pulumi login --local
@@ -25,9 +25,6 @@ pulumi config set memory 32G
 pulumi config set disk 80G
 pulumi up
 ```
-
-Step 1 is a one-off. It clones the provider at a pinned tag, builds its Node SDK
-and installs it under `vendor/`, which is what `npm install` then resolves.
 
 > **Set the size before the first `pulumi up`.** Changing `cpus`, `memory` or
 > `disk` on a stack that is already deployed is reported by the provider as an
@@ -116,35 +113,50 @@ Ordering matters: anything a later step needs to exist is written in `bootcmd`,
 because Nomad refuses to start if a declared `host_volume` path is missing, and
 a failed `scripts_user` stage silently skips every addon `runcmd` after it.
 
-## The provider is not installable from npm
+## Provider version
 
-`scripts/setup-provider-sdk.sh` exists because the provider cannot currently be
-consumed from the registry.
+The templates pin `@incsteps/pulumi-multipass` to **0.2.0** exactly, the lockfiles
+record it, and `postinstall` applies a one-file repair to it. All three parts are
+load-bearing.
 
-`@incsteps/pulumi-multipass@0.1.0` on npm ships the SDK's TypeScript sources
-with no `main` field and no compiled JavaScript. `npm install` succeeds, and
-`pulumi preview` then fails with:
+**Why 0.2.0 and not higher.** 0.3.0 removed the `Snapshot` resource and the
+`restore` function from the provider. Both templates use
+`multipass.resources.Snapshot` to capture the post-provisioning baseline, so
+against 0.3.x they do not even compile. The provider is now in the public Pulumi
+registry as `incsteps/multipass`, but the registry serves only its latest version
+— currently 0.3.3 — and a specific older version cannot be requested through it.
+The plugin binary for 0.2.0 comes instead from the provider's own GitHub releases,
+which is where the SDK points Pulumi by default; `protocol/01` gives the explicit
+command.
+
+**Why 0.2.0 and not lower.** `0.1.0` shipped the SDK's TypeScript sources with no
+compiled JavaScript, so `pulumi preview` failed with `SyntaxError: Cannot use
+import statement outside a module`. That was fixed upstream in
+[#2](https://github.com/incsteps/pulumi-provider-multipass/pull/2) and released in
+0.2.0. An earlier revision of this repository worked around it by cloning the
+provider and building its SDK into `vendor/`; that step is gone.
+
+**Why the repair.** Every published version, 0.1.0 through 0.3.3, is still
+unloadable exactly as shipped. The package sets `main: bin/index.js` and
+`files: ["bin"]`, while `bin/utilities.js` reads its version with
+`require('./package.json')` — resolving to `bin/package.json`, which the tarball
+does not contain. `npm install` reports success and the failure appears only at
+deploy time:
 
 ```
-node_modules/@incsteps/pulumi-multipass/index.ts:4
-import * as pulumi from "@pulumi/pulumi";
-^^^^^^
-SyntaxError: Cannot use import statement outside a module
+Error: Cannot find module './package.json'
+Require stack:
+  .../@incsteps/pulumi-multipass/bin/utilities.js
 ```
 
-The fix is merged upstream as
-[incsteps/pulumi-provider-multipass#2](https://github.com/incsteps/pulumi-provider-multipass/pull/2),
-but it is not yet released: the corrected package is version 0.1.1, and no
-0.1.1 plugin release or npm publish exists. Until both land, the SDK has to be
-built from source, which is what the script does.
+`scripts/fix-provider-sdk.cjs` copies the manifest into `bin/`. It runs from
+`postinstall`, is idempotent, and exits non-zero if the package layout changes, so
+a future version that moves things cannot pass silently. If you install with
+`--ignore-scripts`, run it by hand before `pulumi preview`:
 
-The script pins the provider to tag **v0.1.0** rather than tracking `main`. The
-SDK embeds the plugin version it will ask Pulumi to download, so it must name a
-version that has a GitHub release; `main` is already 0.1.1, and asking for a
-plugin that was never released fails with a 404 during `pulumi preview`.
-Override with `PROVIDER_REF=v0.1.1 ./scripts/setup-provider-sdk.sh` once that
-release exists.
+```bash
+node ../../scripts/fix-provider-sdk.cjs
+```
 
-**When 0.1.1 is published**, this script and the `file:` dependency in
-`templates/single_node_server_worker/package.json` can both be dropped in favour
-of a normal `"@incsteps/pulumi-multipass": "^0.1.1"` dependency.
+Upstream can retire the script by shipping `bin/package.json` or by reading
+`../package.json`.

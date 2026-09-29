@@ -23,22 +23,28 @@ The templates depend on the Pulumi native provider for Canonical Multipass,
 [`incsteps/pulumi-provider-multipass`](https://github.com/incsteps/pulumi-provider-multipass),
 Apache 2.0.
 
-It is **not yet in the public Pulumi registry**. The registry submission is
-[pulumi/registry#12177](https://github.com/pulumi/registry/pull/12177), open at the time of
-writing, so the plugin installs from GitHub release assets against a pinned version:
+The templates pin it to **0.2.0** and install the SDK from public npm, so nothing
+has to be built by hand. `npm install` also runs
+`scripts/fix-provider-sdk.cjs`, which repairs a packaging defect present in every
+published version of the SDK; if you install with `--ignore-scripts`, run that
+script before previewing. The plugin binary needs no separate step either: the
+published SDK carries the provider's own download server, so `pulumi up` fetches
+it from that repository's GitHub release assets.
+
+To install it ahead of time, or to check that it resolves at all:
 
 ```bash
-pulumi plugin install resource multipass v0.1.0 --server github://api.github.com/incsteps/pulumi-provider-multipass
-```
-
-Verify:
-
-```bash
+pulumi plugin install resource multipass 0.2.0 --server github://api.github.com/incsteps/pulumi-provider-multipass
 pulumi plugin ls | grep multipass
 ```
 
-If the registry submission has merged, `pulumi plugin install resource multipass v0.1.0`
-resolves without the `--server` flag.
+The provider **is** now in the public Pulumi registry, as `incsteps/multipass`
+([pulumi/registry#12177](https://github.com/pulumi/registry/pull/12177) merged).
+The registry serves only its latest version, though, so
+`pulumi plugin install resource incsteps/multipass` installs 0.3.3 and a
+specific older version cannot be requested through it. 0.3.3 is not usable here:
+0.3.0 removed the `Snapshot` resource, which both templates use. Hence 0.2.0 and
+the `--server` flag above.
 
 ### On Linux, if Multipass is a snap
 
@@ -63,6 +69,12 @@ The message names the file, but the file is valid; it is the location that canno
 be read. Note the `[^.]` in that rule: a hidden directory such as
 `~/.abc-pulumi-tmp` fails in exactly the same way, so the directory must not start
 with a dot. macOS is unaffected, since Multipass is not confined there.
+
+Set `TMPDIR` even on 0.2.0, which moved the default off `/tmp`. Provider 0.2.0
+writes to `$HOME/.cache/pulumi-multipass` when `TMPDIR` is unset — a hidden path,
+which the rule above excludes just as it excludes `/tmp`, so the same failure is
+expected there. `TMPDIR` takes precedence over that default, so setting it to a
+non-hidden directory remains both necessary and sufficient.
 
 ## Topology A — single-node
 

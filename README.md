@@ -45,7 +45,7 @@ the target setting does not have.
 |---|---|
 | [`abc-cluster/abc-cluster-cli`](https://github.com/abc-cluster/abc-cluster-cli) | the `abc` binary itself, cited as C2 in the manuscript |
 | this repository | the templates and the reviewer protocol, sanitised for publication |
-| [`incsteps/pulumi-provider-multipass`](https://github.com/incsteps/pulumi-provider-multipass) | the Multipass provider the templates consume, pinned to v0.1.0 |
+| [`incsteps/pulumi-provider-multipass`](https://github.com/incsteps/pulumi-provider-multipass) | the Multipass provider the templates consume, pinned to 0.2.0 |
 
 ### The Multipass provider
 
@@ -54,15 +54,10 @@ developed openly at [`incsteps/pulumi-provider-multipass`](https://github.com/in
 and released under Apache 2.0. It is a separate artefact from this work and is not claimed as a
 contribution of the manuscript.
 
-The provider is **not yet in the public Pulumi registry**. Its registry submission is
-[pulumi/registry#12177](https://github.com/pulumi/registry/pull/12177), open at the time of
-writing. Until that merges, installation is from GitHub release assets and the version must be
-pinned explicitly; [Provision](protocol/01-provision.md) gives the exact command. If the
-submission has merged by the time you read this, `pulumi plugin install resource multipass`
-resolves from the registry and the manual step can be skipped.
-
-Every site-specific value in `templates/` is a placeholder in angle brackets. Substitute before
-deploying.
+Nothing about it needs installing by hand: `npm install` in a template fetches the SDK
+from npm and the first `pulumi up` fetches the plugin. The version is pinned, and
+[templates/README.md](templates/README.md#provider-version) says why — 0.3.x removed a
+resource the templates depend on, and the public registry serves only its latest version.
 
 ## Licence
 

@@ -1,13 +1,16 @@
 # Templates
 
-One Pulumi template, `single_node_server_worker`, provisioning a single machine
-that is both Nomad server and worker, with MinIO and tusd as systemd units.
+Two Pulumi templates, the two topologies the manuscript recommends:
+[`single_node_server_worker`](single_node_server_worker/), one machine that is both
+Nomad server and worker with MinIO and tusd as systemd units, and
+[`single_server_with_workers`](single_server_with_workers/), a persistent server with
+ACLs and separate worker VMs. The single-node one is the intended starting point.
 
 ## What a reviewer needs
 
 - **Multipass** and **Pulumi** on the host machine
 - **Node.js 18 or newer**
-- No account anywhere: the template uses a local Pulumi backend. The provider SDK
+- No account anywhere: the templates use a local Pulumi backend. The provider SDK
   comes from public npm and its plugin binary from the provider's GitHub
   releases, so the only thing needed is network access on the first deploy
 - `npm install` must be allowed to run its `postinstall` step, which repairs a

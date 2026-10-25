@@ -1,7 +1,7 @@
 {
   "title": "ABC-cluster manuscript assets",
   "upload_type": "software",
-  "license": "Apache-2.0",
+  "license": "EPL-2.0",
   "description": "Deployment templates and a reviewer protocol for ABC-cluster, a command-line platform delivering batch pipeline execution, interactive analysis and data-app hosting on commodity, heterogeneous and intermittently connected hardware. Companion artefact to the ABC-cluster manuscript.",
   "keywords": [
     "bioinformatics",
@@ -12,5 +12,31 @@
     "low-resource settings",
     "infrastructure as code"
   ],
+  "creators": [
+    {
+      "name": "Sharma, Abhinav",
+      "orcid": "0000-0002-6402-6993",
+      "affiliation": "SAMRC Centre for Tuberculosis Research, Division of Molecular Biology and Human Genetics, Faculty of Medicine and Health Sciences, Stellenbosch University, Cape Town, South Africa"
+    },
+    {
+      "name": "Aguilera, Jorge",
+      "orcid": "0009-0005-5537-7029",
+      "affiliation": "Incremental Steps"
+    },
+    {
+      "name": "van der Spuy, Gian",
+      "orcid": "0000-0002-9067-5903",
+      "affiliation": "SAMRC Centre for Tuberculosis Research, Division of Molecular Biology and Human Genetics, Faculty of Medicine and Health Sciences, Stellenbosch University, Cape Town, South Africa"
+    }
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/abhi18av-phd-projects/abc-cluster-manuscript-assets",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    }
+  ],
+  "version": "1.0.1",
+  "publication_date": "2026-10-25",
   "access_right": "open"
 }

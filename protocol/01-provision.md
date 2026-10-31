@@ -87,8 +87,21 @@ use.
 cd templates/single_node_server_worker
 npm install
 pulumi stack init eval
+pulumi config set cpus 8
+pulumi config set memory 20G
+pulumi config set disk 60G
 pulumi up
 ```
+
+Set the size **before** the first `pulumi up`. The template defaults to 4 vCPU /
+16 GB / 20 GB, which deploys the platform but is too small for the nf-core
+pipelines in the worked example: a process that requests more than the VM has
+never places, and the run waits indefinitely rather than failing. 8 vCPU / 20 GB /
+60 GB is the configuration Table 6 of the manuscript was measured on. Changing the size of a stack that is already deployed destroys the
+instance; see the sizing notes in [`templates/README.md`](../templates/README.md).
+
+These are the VM's resources, so the host running Multipass needs more than this:
+enough on top for its own operating system.
 
 The stack outputs the VM address and the Nomad API endpoint.
 
@@ -101,10 +114,17 @@ access control are enabled, and `abc-auth-svc` brokers the single login.
 cd templates/single_server_with_workers
 npm install
 pulumi stack init lab
-pulumi config set workerCount 2
-pulumi config set overlay tailscale   # or: nebula
+pulumi config set clientCount 2
+pulumi config set clientCpus 4
+pulumi config set clientMemory 12G
 pulumi up
 ```
+
+`clientCount` defaults to 1, so set it to get the two workers the manuscript
+describes. The worker size is what the pipelines in
+[04-multi-node.md](04-multi-node.md) need; the default 2 vCPU / 4 GB runs `hello`
+but not `rnaseq-nf` or `nf-core/demo`. The server and workers reach each other
+over Multipass's own network; this template does not configure an overlay.
 
 Substitute every `<angle-bracket>` placeholder in `Pulumi.yaml` before running.
 
@@ -118,7 +138,6 @@ failure here is a failure of the paper's description, not only of your deploymen
 | Nomad | `nomad node status` | every worker `ready`; on single-node, one node |
 | Nomad ACL | `nomad acl token self` | a token on topology B; an error on topology A, which has no access control |
 | MinIO | `mc alias set local <endpoint> <key> <secret> && mc ls local` | the platform buckets are listed |
-| Overlay | `tailscale status` or `nebula-cert print` | server and workers on one flat address space |
 | `abc-auth-svc` | `curl -sf <auth-endpoint>/healthz` | healthy on topology B; **not deployed on topology A** |
 | JupyterHub | open `https://<server>/hub/login` | login page, authenticated by `abc-auth-svc` |
 | tus ingestion | `abc data upload <file>`, interrupt it, re-run | resumes from the last offset rather than from zero |
@@ -157,8 +176,11 @@ Confirm the classes before running the worked example. The built-in
 `hello-cluster` workload needs no script file:
 
 ```bash
-abc job run hello-cluster
+abc job run hello-cluster --driver=docker
 ```
+
+With no `--driver`, `hello-cluster` selects the containerd driver, which the
+single-node template does not install, and fails preflight.
 
 Then an annotated script of your own, and a pipeline:
 

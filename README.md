@@ -18,10 +18,13 @@ Three documents, in order, from a bare laptop to the output the manuscript repor
 The single-node template is the intended starting point. It needs no cloud account and no
 institutional hardware, and it runs on a laptop with Multipass installed.
 
+For `single_server_with_workers`, provision with [01](protocol/01-provision.md) and then run the
+pipelines with [Multi-node](protocol/04-multi-node.md) in place of 02.
+
 ## Scope
 
 This repository carries **only the two topologies the manuscript recommends**, under the same
-identifiers used in Table 3 of the paper.
+identifiers used in Table 4 of the paper.
 
 | Template | Manuscript identifier | Nomad mode | Access control | Users |
 |---|---|---|---|---|

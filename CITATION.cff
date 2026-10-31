@@ -18,4 +18,15 @@ keywords:
   - reproducibility
   - low-resource settings
   - infrastructure as code
-version: 0.1.0
+version: 1.0.1
+date-released: 2026-10-25
+authors:
+  - given-names: Abhinav
+    family-names: Sharma
+    orcid: "https://orcid.org/0000-0002-6402-6993"
+  - given-names: Jorge
+    family-names: Aguilera
+    orcid: "https://orcid.org/0009-0005-5537-7029"
+  - given-names: Gian
+    family-names: van der Spuy
+    orcid: "https://orcid.org/0000-0002-9067-5903"

@@ -4,8 +4,12 @@ What each step of [02-run-workload.md](02-run-workload.md) produced on a clean
 deployment. Your identifiers (job IDs, allocation IDs, IP addresses) will differ;
 the shape of the output and the checksums should not.
 
-Recorded 2026-08-29 against abc CLI v0.1.76, nf-nomad 0.5.0-edge4, Nomad v1.11.2,
-on a single Multipass instance at 8 vCPU / 32 GB / 80 GB.
+Two sessions are recorded here, and they ran on different instances. Sections 1 to 5
+and 7, the walkthrough, were recorded 2026-08-29 against abc CLI v0.1.76, nf-nomad
+0.5.0-edge4 and Nomad v1.11.2, on a single Multipass instance at 8 vCPU / 32 GB /
+80 GB. Section 6, the pipeline measurements the manuscript reports as Table 6, is a
+separate run on a smaller instance and names its own environment below. Do not read
+the figures in section 6 against the specification in this paragraph.
 
 ## 1. Context import
 
@@ -96,22 +100,24 @@ the task starts.
 
 Each row is a single run, measured on its own with nothing else on the node.
 `peak memory` and `peak load` are node-level samples taken every 10 s across the
-run; `disk` is the increase in used space attributable to that run, which is
-dominated by container image pulls and therefore falls sharply once an image is
-cached.
+run. Disk growth was not captured per run and is not reported.
 
-| Pipeline | Revision | Profile | Wall clock | Processes | Peak memory | Peak load | Disk |
-| --- | --- | --- | --- | --- | --- | --- | --- |
+| Pipeline | Revision | Profile | Wall clock | Processes | Peak memory | Peak load |
+| --- | --- | --- | --- | --- | --- | --- |
 | `nextflow-io/hello` | master | — | 1 min 16 s | 4 | 1.3 GB | 1.2 |
 | `nextflow-io/rnaseq-nf` | master | — | 3 min 16 s | 4 | 1.6 GB | 2.5 |
 | `nf-core/demo` | 1.2.0 | test | 3 min 16 s | 8 | 2.3 GB | 4.1 |
 | `nf-core/detaxizer` | 1.3.0 | test | 7 min 47 s | 54 | 2.7 GB | 2.5 |
 | `nf-core/viralrecon` | 3.0.0 | test | 57 min 1 s | 200 | 9.7 GB | 5.2 |
 
-Measured on **8 vCPU / 20 GB / 60 GB** with nf-nomad 0.5.0-edge5, each pipeline
-run on its own and with no Nextflow configuration file supplied.
+Measured on **8 vCPU / 20 GB / 60 GB** with abc CLI v0.1.76, nf-nomad 0.5.0-edge5 and
+Nomad v1.11.2, each pipeline run on its own with nothing else scheduled.
 
-with nothing else scheduled.
+No Nextflow configuration *file* was supplied, but the runs were not unconfigured:
+each carried `--plugin nf-nomad@0.5.0-edge5` on the command line, and
+`nf-core/viralrecon` carried `--plugin nf-schema@2.5.1` as well, for the reason
+below. Beyond those pins the platform's generated configuration was the only
+configuration in effect.
 
 Two things are worth reading off this table rather than the individual numbers.
 `nf-core/demo` peaks higher than `rnaseq-nf` while doing less biological work,

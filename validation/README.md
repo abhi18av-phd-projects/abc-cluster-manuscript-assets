@@ -1,8 +1,13 @@
 # Validation and supplemental data
 
-What the worked example deposits, and why each item earns its place. Nothing here is a
-measurement for its own sake: every item makes a specific claim in the manuscript checkable by
-someone who does not trust it.
+**Status: this is a plan, not a deposit. None of the paths below exist yet.** Every item is
+listed because it would make a specific claim in the manuscript checkable by someone who does
+not trust it; none has been produced. The manuscript's Supplementary S3.3 records the same gap
+from the other side, and says which items are already answered by `../protocol/03-expected-output.md`
+and which are not.
+
+What the worked example should deposit, and why each item earns its place. Nothing here is a
+measurement for its own sake.
 
 ## Tier 1 — required by the journal
 

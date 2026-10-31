@@ -24,8 +24,8 @@ pulumi login --local
 pulumi stack init review
 # set the size BEFORE the first `pulumi up` — see the warning below
 pulumi config set cpus 8
-pulumi config set memory 32G
-pulumi config set disk 80G
+pulumi config set memory 20G
+pulumi config set disk 60G
 pulumi up
 ```
 

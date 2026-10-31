@@ -17,6 +17,7 @@ are 2 vCPU / 4 GB, which runs `hello` but is under what `rnaseq-nf` and
 looks like a cluster fault:
 
 ```bash
+pulumi config set clientCount 2
 pulumi config set clientCpus 4
 pulumi config set clientMemory 12G
 ```

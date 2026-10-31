@@ -40,10 +40,11 @@ later failure is easier to read once this one is green.
 ## 3. Built-in workload
 
 ```bash
-abc job run hello-cluster
+abc job run hello-cluster --driver=docker
 ```
 
-A synthetic CPU workload with no arguments. It confirms scheduling, the node
+A synthetic CPU workload. `--driver=docker` is needed: with no driver it selects
+containerd, which this template does not install, and fails preflight. It confirms scheduling, the node
 pool and the container driver in one command.
 
 ## 4. Ingest reads over a resumable connection
@@ -95,16 +96,22 @@ when the task starts and the resolved form is written into the run record.
 
 ## 6. Pipelines
 
-Each pipeline runs at a pinned revision with the `test` profile. Use `test`, not
-`test_full`: the full profiles pull production-sized data and are not the point
-of this protocol.
+Each pipeline runs at a pinned revision. The three nf-core pipelines run with
+their `test` profile; the two `nextflow-io` pipelines have no `test` profile and
+run on the inputs they bundle, so omit `--profile` for those (the table below
+says which). Use `test`, not `test_full`: the full profiles pull production-sized
+data and are not the point of this protocol.
 
 ```bash
-abc pipeline run <url> --revision <tag> --profile test \
+abc pipeline run <url> --revision <tag> [--profile test] \
   --work-dir s3://nf-work/<name>/ \
   --param outdir=s3://nf-work/<name>-results/ \
-  --plugin nf-nomad@0.5.0-edge4
+  --plugin nf-nomad@0.5.0-edge5
 ```
+
+Use nf-nomad **0.5.0-edge5** or newer. Earlier versions do not apply
+`process.resourceLimits` to the generated job, so `nf-core/detaxizer` requests
+12 cores and 80 GB and never places on the recommended deployment.
 
 | Pipeline | URL | Revision | Profile | Extra flags |
 | --- | --- | --- | --- | --- |

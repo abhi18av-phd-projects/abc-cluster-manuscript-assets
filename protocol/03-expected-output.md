@@ -146,7 +146,7 @@ Restore the pin on the command line:
 
 ```bash
 abc pipeline run https://github.com/nf-core/viralrecon --revision 3.0.0 \
-  --profile test --plugin nf-nomad@0.5.0-edge4 --plugin nf-schema@2.5.1 ...
+  --profile test --plugin nf-nomad@0.5.0-edge5 --plugin nf-schema@2.5.1 ...
 ```
 
 With 2.5.1 the run completes all 200 processes. Any pipeline that pins a plugin

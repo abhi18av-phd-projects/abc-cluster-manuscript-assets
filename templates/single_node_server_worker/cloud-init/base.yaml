@@ -324,6 +324,12 @@ write_files:
       # HOME is unset under systemd; the CLI wants somewhere to look for config.
       export HOME=/root
       abc-s3 s3api head-bucket --bucket tusd 2>/dev/null || abc-s3 s3 mb s3://tusd
+      # An uploaded object can be read without credentials by anyone who knows
+      # its key; the bucket cannot be listed. The worked example depends on it:
+      # its job fetches the uploaded reads with a plain curl (protocol/02,
+      # step 5), which a private bucket answers with 403.
+      abc-s3 s3api put-bucket-policy --bucket tusd --policy \
+        '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::tusd/*"]}]}'
       echo "minio-init: bucket 'tusd' ready"
 
   # ── Nomad config: enable raw_exec driver ─────────────────────────────────────

@@ -117,12 +117,26 @@ Use nf-nomad **0.5.0-edge5** or newer. Earlier versions do not apply
 | --- | --- | --- | --- | --- |
 | `nextflow-io/hello` | `https://github.com/nextflow-io/hello` | `master` | — | — |
 | `nextflow-io/rnaseq-nf` | `https://github.com/nextflow-io/rnaseq-nf` | `master` | — | — |
-| `nf-core/demo` | `https://github.com/nf-core/demo` | `1.2.0` | `test` | — |
-| `nf-core/detaxizer` | `https://github.com/nf-core/detaxizer` | `1.3.0` | `test` | — |
+| `nf-core/demo` | `https://github.com/nf-core/demo` | `1.2.0` | `test` | `--plugin nf-schema@2.7.2` |
+| `nf-core/detaxizer` | `https://github.com/nf-core/detaxizer` | `1.3.0` | `test` | `--plugin nf-schema@2.5.1` |
 | `nf-core/viralrecon` | `https://github.com/nf-core/viralrecon` | `3.0.0` | `test` | `--plugin nf-schema@2.5.1` |
 
-viralrecon needs its schema plugin pinned explicitly; the reason is recorded in
+The three nf-core pipelines need their schema plugin pinned explicitly, each to
+the version its own `nextflow.config` names; the reason is recorded in
 [03-expected-output.md](03-expected-output.md).
+
+The pin only helps on a CLI that applies it. **abc CLI v0.1.84 does not**: it
+writes a `--plugin` pin for anything other than nf-nomad into a configuration
+tier that its own head configuration then overrides, so the three nf-core
+pipelines fail on it exactly as if the flag were absent. v0.1.76, the version
+the recorded sessions used, applies the pin. Until a release fixes this, install
+that version for this step:
+
+```bash
+curl -fsSL -H "Accept: application/vnd.github.raw+json" \
+  "https://api.github.com/repos/abc-cluster/abc-cluster-cli/contents/scripts/install-abc.sh?ref=main" \
+  | sh -s -- --version v0.1.76
+```
 
 Run them in the order listed. `nextflow-io/hello` finishes in under a minute and
 fails fast if the executor, the object store or the node pool are wrong, which

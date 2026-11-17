@@ -8,3 +8,19 @@ of the Eclipse Public License 2.0, which accompanies this distribution as the
 LICENSE file, and is available at https://www.eclipse.org/legal/epl-2.0/
 
 SPDX-License-Identifier: EPL-2.0
+
+Third-party software fetched at deploy time
+-------------------------------------------
+
+The templates download, and do not contain, the following MinIO programs. They
+are separate works under the GNU Affero General Public License v3.0, copyright
+MinIO, Inc., and are not covered by the licence above.
+
+  MinIO server  RELEASE.2024-12-18T13-15-44Z   https://github.com/minio/minio/tree/RELEASE.2024-12-18T13-15-44Z
+  MinIO server  RELEASE.2024-11-07T00-52-20Z   https://github.com/minio/minio/tree/RELEASE.2024-11-07T00-52-20Z
+  MinIO client  RELEASE.2025-08-13T08-35-41Z   https://github.com/minio/mc/tree/RELEASE.2025-08-13T08-35-41Z
+
+Unmodified copies of these binaries are mirrored as assets of this repository's
+1.0.2 release, because their original download site no longer serves them. The
+corresponding source for each is attached to the same release as
+<repository>-<tag>.src.tar.gz, and is also available at the URLs above.

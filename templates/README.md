@@ -13,6 +13,8 @@ ACLs and separate worker VMs. The single-node one is the intended starting point
 - No account anywhere: the templates use a local Pulumi backend. The provider SDK
   comes from public npm and its plugin binary from the provider's GitHub
   releases, so the only thing needed is network access on the first deploy
+- Nothing for the object store: the VMs fetch MinIO themselves, from the
+  sources listed under **Object store source** below
 - `npm install` must be allowed to run its `postinstall` step, which repairs a
   packaging defect in every published version of the provider SDK — see
   **Provider version** below
@@ -115,6 +117,65 @@ merged key by key across `packages`, `bootcmd`, `write_files` and `runcmd`.
 Ordering matters: anything a later step needs to exist is written in `bootcmd`,
 because Nomad refuses to start if a declared `host_volume` path is missing, and
 a failed `scripts_user` stage silently skips every addon `runcmd` after it.
+
+## Object store source
+
+Both templates run MinIO, as the manuscript describes. MinIO's community edition
+has since reached end of life: the upstream repositories are archived,
+`dl.min.io` answers HTTP 410 for every community build and for the `mc` client,
+and the `minio/minio` image is gone from Docker Hub and Quay (checked
+2026-11-17). Releases 1.0.0 and 1.0.1 of this repository fetched from those
+locations, so they can no longer provision an object store from a clean machine.
+
+From 1.0.2 the templates take the same builds from places that still answer, and
+install nothing whose sha256 does not match the pin:
+
+| Artefact | Template | Build | sha256 |
+| --- | --- | --- | --- |
+| MinIO server | `single_node_server_worker` | `RELEASE.2024-12-18T13-15-44Z` | `88182336ab5793488f2caad54846056b330f0dcb5c488b60d52434beeebae3ca` |
+| MinIO server | `single_server_with_workers` | `RELEASE.2024-11-07T00-52-20Z` | `c27873d791b56d33518de11f12c5bfae4be88ebac00e12c6dd0027b08123fd80` |
+| `mc` | `single_server_with_workers` | `RELEASE.2025-08-13T08-35-41Z` | `01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891` |
+| AWS CLI | `single_node_server_worker` | `2.40.4` | `81f573c2a0ace70cfb97aa4d014c17cbd605cb04cbad09adbc7aaf9c0979ae8e` |
+
+These are the builds the earlier releases ran: the two server pins are unchanged,
+and `mc` is pinned to its final release, which is what the unpinned "latest" URL
+had been serving. All `linux-amd64`.
+
+**Sources, in order.** The release assets of the archived upstream repositories
+([`minio/minio`](https://github.com/minio/minio/releases),
+[`minio/mc`](https://github.com/minio/mc/releases)), then a copy mirrored on this
+repository's own `1.0.2` release. The mirror exists because the first source is
+an archived repository whose owner has already withdrawn every other
+distribution channel. `scripts/mirror-object-store-binaries.sh` builds the
+mirror: it downloads each binary and the source tarball for its tag, verifies
+the checksums above, and attaches them to the release.
+
+**The client.** `single_node_server_worker` no longer uses `mc`. It only ever
+needed plain S3 operations — create a bucket, set a read policy, copy a file —
+and those now go through the AWS CLI, wrapped as `abc-s3` in the VM so that the
+endpoint and the development credentials are already set:
+
+```bash
+multipass exec abc-node -- abc-s3 s3 ls
+```
+
+The wrapper also sets `AWS_REQUEST_CHECKSUM_CALCULATION=when_required`. Current
+AWS CLI versions add a CRC64NVME checksum to every upload by default, which this
+MinIO build predates; without the setting, `s3 cp` fails on
+`InvalidRequestParameter`.
+
+`single_server_with_workers` keeps `mc`, pinned and verified as above. That
+topology creates MinIO users, policies and service accounts, which is MinIO's own
+admin API; no general S3 client speaks it. Its server used to be the
+`minio/minio` container image; it is now the same build's binary, fetched by
+Nomad's `artifact` block with the checksum and run in a stock `ubuntu:24.04`
+container.
+
+**What this does not change.** These builds receive no further fixes of any
+kind, security fixes included. The templates are for evaluating the platform on
+a private host network, with development credentials, and were never meant to be
+exposed; that matters more now than it did. Replacing MinIO with a maintained
+store is a change to what the manuscript describes and is not made here.
 
 ## Provider version
 

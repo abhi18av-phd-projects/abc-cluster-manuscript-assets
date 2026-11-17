@@ -152,6 +152,32 @@ abc pipeline run https://github.com/nf-core/viralrecon --revision 3.0.0 \
 With 2.5.1 the run completes all 200 processes. Any pipeline that pins a plugin
 version needs the same treatment until the plugin blocks merge.
 
+### Since nf-schema 3.0.0, `demo` and `detaxizer` need the pin too
+
+When the table above was measured, the latest nf-schema still worked with
+`nf-core/demo` and `nf-core/detaxizer`, so neither carried a pin. Re-run on
+2026-11-17, both resolve nf-schema 3.0.0 and fail before scheduling anything:
+
+```
+Downloading plugin nf-schema@3.0.0
+Missing process or function paramsSummaryLog([[:], repository: https://github.com/nf-core/demo, ...
+```
+
+Pin each to the version its own `nextflow.config` names — `nf-schema@2.7.2` for
+`demo` 1.2.0, `nf-schema@2.5.1` for `detaxizer` 1.3.0 — as the run protocol now
+shows. With the pin and abc CLI v0.1.76, `demo` completes its 8 processes.
+
+The same re-run found that abc CLI v0.1.84 does not apply these pins at all. The
+generated head job carries two plugin blocks, and Nextflow uses only the last:
+
+```
+local/nextflow.defaults.config   plugins { id "nf-schema@2.7.2" }
+local/nextflow.headjob.config    plugins { id "nf-nomad@0.5.0-edge5"  id "nf-nomad-s5cmd@0.1.10" }
+```
+
+v0.1.76 writes all three into one block, and the run protocol says how to
+install it.
+
 ## 7. Publish a result
 
 ```

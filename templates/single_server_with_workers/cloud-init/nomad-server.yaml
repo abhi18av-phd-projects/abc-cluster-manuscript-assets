@@ -24,8 +24,28 @@ runcmd:
 - ln -sf /opt/nextflow/nextflow /usr/local/bin/nextflow
 - mkdir -p /opt/nf-test
 - chown -R ubuntu:ubuntu /opt/nextflow /opt/nf-test
-- wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc
-- chmod +x /usr/local/bin/mc
+# mc, the MinIO admin client. dl.min.io no longer serves it (HTTP 410), so it is
+# pinned to the last release and taken from the first source that answers AND
+# matches the sha256: the archived upstream repository, then the copy mirrored
+# on this repository's 1.0.2 release. It stays in this template, unlike in
+# single_node_server_worker, because users, policies and service accounts are
+# MinIO's own admin API and no general S3 client speaks it.
+- |
+  MC_SHA256=01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
+  MC_ASSET=mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z
+  for url in \
+    "https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/${MC_ASSET}" \
+    "https://github.com/abhi18av-phd-projects/abc-cluster-manuscript-assets/releases/download/1.0.2/${MC_ASSET}"; do
+    if curl -fsSL --retry 3 --retry-delay 2 --max-time 900 -o /tmp/mc "$url" \
+       && echo "${MC_SHA256}  /tmp/mc" | sha256sum -c - >/dev/null 2>&1; then
+      install -m 0755 /tmp/mc /usr/local/bin/mc
+      echo "mc installed from $url (sha256 ok)"
+      break
+    fi
+    echo "mc: unavailable or sha256 mismatch: $url" >&2
+  done
+  rm -f /tmp/mc
+  [ -x /usr/local/bin/mc ] || echo "ERROR: mc could not be fetched; MinIO users, policies and buckets will not be provisioned" >&2
 - systemctl daemon-reload
 - systemctl enable nomad
 - systemctl start nomad

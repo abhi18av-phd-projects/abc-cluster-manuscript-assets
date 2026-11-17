@@ -156,9 +156,7 @@ doing its job. `s3://nf-work/` belongs to the operator path below and returns
 For the hand-written operator context, create the shared bucket:
 
 ```bash
-multipass exec abc-worker-0 -- sudo bash -c '
-  export MC_HOST_local=http://minioadmin:minioadmin@<minio-worker-ip>:9000
-  mc mb --ignore-existing local/nf-work'
+multipass exec abc-server -- mc mb --ignore-existing abc/nf-work
 ```
 
 ## 4. Run the pipelines

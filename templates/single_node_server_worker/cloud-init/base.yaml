@@ -9,7 +9,7 @@
 #
 # Services installed as systemd units:
 #   minio.service        — MinIO object storage          :9000 (HTTP)
-#   minio-init.service   — creates tusd bucket (oneshot)
+#   minio-init.service   — creates tusd bucket (oneshot, via the AWS CLI)
 #   tusd.service         — TUS protocol upload server    :1080 (HTTP)
 #   nomad.service        — Nomad -dev agent              :4646 (HTTP)
 #
@@ -31,9 +31,17 @@
 #   raw_exec  — enabled for fx-tusd-hook and gen-tls-cert Nomad jobs
 #
 # Version pins (change here only):
-#   Nomad  1.11.2
-#   MinIO  RELEASE.2024-12-18T13-15-44Z
-#   tusd   v2.4.0
+#   Nomad    1.11.2
+#   MinIO    RELEASE.2024-12-18T13-15-44Z   sha256 88182336…beeebae3ca
+#   AWS CLI  2.40.4                         sha256 81f573c2…0979ae8e
+#   tusd     v2.4.0
+#
+# Where MinIO comes from:
+#   MinIO's community edition is end-of-life and dl.min.io answers HTTP 410 for
+#   every community build, so the binary is fetched by abc-fetch-verified (below)
+#   from an ordered list of sources and installed only if its sha256 matches the
+#   pin. The MinIO client `mc` is not used: bucket setup goes through the AWS CLI
+#   (the abc-s3 wrapper below). See templates/README.md, "Object store source".
 #
 # Credentials (dev defaults):
 #   MinIO root user/password: minioadmin / minioadmin
@@ -252,6 +260,55 @@ write_files:
               logging.info("hook: shutting down")
               import sys; sys.exit(0)
 
+  # ── abc-fetch-verified ───────────────────────────────────────────────────────
+  # Download a file from the first source that answers AND matches the pinned
+  # sha256. Nothing is installed on a mismatch, so a source that goes away, or
+  # starts serving something else, is skipped rather than trusted.
+  - path: /usr/local/bin/abc-fetch-verified
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # abc-fetch-verified <dest> <sha256> <url> [<url> ...]
+      set -u
+      dest=$1; want=$2; shift 2
+      tmp=$(mktemp)
+      trap 'rm -f "$tmp"' EXIT
+      for url in "$@"; do
+        if ! curl -fsSL --retry 3 --retry-delay 2 --max-time 900 -o "$tmp" "$url"; then
+          echo "abc-fetch-verified: not available: $url" >&2
+          continue
+        fi
+        got=$(sha256sum "$tmp" | cut -d' ' -f1)
+        if [ "$got" != "$want" ]; then
+          echo "abc-fetch-verified: sha256 mismatch from $url (got $got, want $want)" >&2
+          continue
+        fi
+        install -m 0755 "$tmp" "$dest"
+        echo "abc-fetch-verified: $dest <- $url (sha256 ok)"
+        exit 0
+      done
+      echo "abc-fetch-verified: ERROR: no source provided $dest with sha256 $want" >&2
+      exit 1
+
+  # ── abc-s3 ───────────────────────────────────────────────────────────────────
+  # The AWS CLI pointed at this deployment's object store, with the template's
+  # development credentials. Usage is the AWS CLI's own:
+  #   abc-s3 s3 ls            abc-s3 s3 cp <file> s3://<bucket>/<key>
+  - path: /usr/local/bin/abc-s3
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-minioadmin}"
+      export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-minioadmin}"
+      export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+      # Send a checksum only where S3 requires one. Since 2.23 the CLI adds a
+      # CRC64NVME checksum to every upload by default, which this MinIO build
+      # predates: without these two lines `s3 cp` fails on
+      #   InvalidRequestParameter ... calling the CreateMultipartUpload operation
+      export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+      export AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+      exec aws --endpoint-url "${ABC_S3_ENDPOINT:-http://127.0.0.1:9000}" "$@"
+
   # ── minio-init script ────────────────────────────────────────────────────────
   # Waits for MinIO to be healthy, then creates the tusd bucket idempotently.
   - path: /usr/local/bin/minio-init.sh
@@ -264,8 +321,15 @@ write_files:
         sleep 2
       done
       echo "minio-init: MinIO healthy"
-      mc alias set local http://127.0.0.1:9000 minioadmin minioadmin --api S3v4
-      mc mb local/tusd --ignore-existing
+      # HOME is unset under systemd; the CLI wants somewhere to look for config.
+      export HOME=/root
+      abc-s3 s3api head-bucket --bucket tusd 2>/dev/null || abc-s3 s3 mb s3://tusd
+      # An uploaded object can be read without credentials by anyone who knows
+      # its key; the bucket cannot be listed. The worked example depends on it:
+      # its job fetches the uploaded reads with a plain curl (protocol/02,
+      # step 5), which a private bucket answers with 403.
+      abc-s3 s3api put-bucket-policy --bucket tusd --policy \
+        '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::tusd/*"]}]}'
       echo "minio-init: bucket 'tusd' ready"
 
   # ── Nomad config: enable raw_exec driver ─────────────────────────────────────
@@ -446,15 +510,32 @@ runcmd:
   - rm /tmp/nomad.zip
 
   # ── MinIO server binary ────────────────────────────────────────────────────────
-  - wget -q https://dl.min.io/server/minio/release/linux-amd64/archive/minio.RELEASE.2024-12-18T13-15-44Z -O /usr/local/bin/minio
-  - chmod +x /usr/local/bin/minio
+  # dl.min.io no longer serves community builds (HTTP 410). Sources, in order:
+  #   1. the release asset on the archived upstream repository
+  #   2. the copy mirrored on this repository's 1.0.2 release
+  # Either is installed only if it matches the pinned sha256.
+  - |
+    abc-fetch-verified /usr/local/bin/minio \
+      88182336ab5793488f2caad54846056b330f0dcb5c488b60d52434beeebae3ca \
+      https://github.com/minio/minio/releases/download/RELEASE.2024-12-18T13-15-44Z/minio.linux-amd64.RELEASE.2024-12-18T13-15-44Z \
+      https://github.com/abhi18av-phd-projects/abc-cluster-manuscript-assets/releases/download/1.0.2/minio.linux-amd64.RELEASE.2024-12-18T13-15-44Z \
+      || echo "ERROR: MinIO could not be fetched; the object store, uploads and pipelines will not work" >&2
   - useradd -r -s /sbin/nologin minio || true
   - mkdir -p /data/minio
   - chown -R minio:minio /data/minio
 
-  # ── mc (MinIO client, used by minio-init.sh) ───────────────────────────────────
-  - wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc
-  - chmod +x /usr/local/bin/mc
+  # ── AWS CLI (S3 client, used by minio-init.sh and the addons via abc-s3) ───────
+  # Replaces the MinIO client `mc`, which dl.min.io no longer serves either.
+  - |
+    if abc-fetch-verified /tmp/awscli.zip \
+         81f573c2a0ace70cfb97aa4d014c17cbd605cb04cbad09adbc7aaf9c0979ae8e \
+         https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.40.4.zip \
+       && unzip -oq /tmp/awscli.zip -d /tmp && /tmp/aws/install --update >/dev/null; then
+      echo "AWS CLI installed: $(aws --version)"
+    else
+      echo "ERROR: AWS CLI could not be installed; bucket setup will fail" >&2
+    fi
+    rm -rf /tmp/awscli.zip /tmp/aws
 
   # ── tusd binary ───────────────────────────────────────────────────────────────
   - wget -q https://github.com/tus/tusd/releases/download/v2.4.0/tusd_linux_amd64.tar.gz -O /tmp/tusd.tar.gz

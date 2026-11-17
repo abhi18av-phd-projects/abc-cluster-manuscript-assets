@@ -18,6 +18,15 @@
 #   mc alias set seedling http://<client-ip>:9000 minioadmin minioadmin
 #   mc mb seedling/nf-work
 #
+# Where the server comes from:
+#   MinIO's community edition is end-of-life. The `minio/minio` image this job
+#   used to pull is gone from Docker Hub and Quay, and dl.min.io answers
+#   HTTP 410. The same build (RELEASE.2024-11-07T00-52-20Z) is therefore
+#   fetched as a binary by Nomad's artifact block, which refuses it unless the
+#   sha256 matches, and run inside a stock ubuntu image. If the upstream URL
+#   stops answering, point the job at the mirrored copy:
+#     nomad job run -var minio_binary_url=https://github.com/abhi18av-phd-projects/abc-cluster-manuscript-assets/releases/download/1.0.2/minio.linux-amd64.RELEASE.2024-11-07T00-52-20Z minio.nomad.hcl
+#
 # FusionFS nextflow.config additions (after MinIO is up):
 #   fusion {
 #     enabled    = true
@@ -40,6 +49,12 @@
 #
 # Note: FusionFS requires a Seqera Wave token. Set NXF_WAVE_TOKEN=<token>
 # or configure wave.endpoint if running a self-hosted Wave instance.
+
+variable "minio_binary_url" {
+  type        = string
+  description = "Where to fetch the MinIO server binary. The checksum below pins the build whatever the source."
+  default     = "https://github.com/minio/minio/releases/download/RELEASE.2024-11-07T00-52-20Z/minio.linux-amd64.RELEASE.2024-11-07T00-52-20Z"
+}
 
 job "minio" {
   type        = "service"
@@ -86,10 +101,22 @@ job "minio" {
         read_only   = false
       }
 
+      # The server binary, pinned by checksum. Nomad places it in the task's
+      # local/ directory, which the container sees at /local.
+      artifact {
+        source      = var.minio_binary_url
+        destination = "local/minio"
+        mode        = "file"
+        options {
+          checksum = "sha256:c27873d791b56d33518de11f12c5bfae4be88ebac00e12c6dd0027b08123fd80"
+        }
+      }
+
       config {
-        image   = "minio/minio:RELEASE.2024-11-07T00-52-20Z"
-        command = "server"
-        args    = ["/data", "--console-address", ":9001"]
+        # MinIO is a static binary; the image only supplies a userland.
+        image   = "ubuntu:24.04"
+        command = "/bin/sh"
+        args    = ["-c", "chmod +x /local/minio && exec /local/minio server /data --console-address :9001"]
         ports   = ["api", "console"]
       }
 

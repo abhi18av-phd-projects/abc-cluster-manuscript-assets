@@ -52,11 +52,20 @@ runcmd:
       curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1 && break
       sleep 2
     done
-    export MC_HOST_local="http://minioadmin:minioadmin@127.0.0.1:9000"
-    curl -fsSL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc \
-      && chmod +x /usr/local/bin/mc || { echo "ERROR: mc download failed" >&2; exit 0; }
-    mc mb --ignore-existing local/abc-reserved
-    mc anonymous set download local/abc-reserved
+    # abc-s3 is the AWS CLI wrapper base.yaml installs. No early `exit` here:
+    # cloud-init joins every runcmd entry into one script, so exiting would
+    # skip the addons that follow.
+    abc-s3 s3api head-bucket --bucket abc-reserved 2>/dev/null || abc-s3 s3 mb s3://abc-reserved
+    # Anonymous read on this bucket only: tasks fetch the provisioner without
+    # credentials. Same grant `mc anonymous set download` used to make.
+    cat > /tmp/abc-reserved-policy.json <<'POLICY'
+    {"Version":"2012-10-17","Statement":[
+      {"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetBucketLocation","s3:ListBucket"],"Resource":["arn:aws:s3:::abc-reserved"]},
+      {"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::abc-reserved/*"]}]}
+    POLICY
+    abc-s3 s3api put-bucket-policy --bucket abc-reserved --policy file:///tmp/abc-reserved-policy.json \
+      || echo "ERROR: could not set the anonymous-read policy on abc-reserved" >&2
+    rm -f /tmp/abc-reserved-policy.json
     K=$(uname -s | tr '[:upper:]' '[:lower:]')
     A=$(uname -m)
     # The CLI normalises the arch before building the URL, so publish under the
@@ -64,7 +73,7 @@ runcmd:
     case "$A" in x86_64) A=amd64 ;; aarch64) A=arm64 ;; esac
     for t in pixi micromamba; do
       if [ -x "/opt/abc/tools/$t" ]; then
-        mc cp "/opt/abc/tools/$t" "local/abc-reserved/binary_tools/$t-$K-$A" \
+        abc-s3 s3 cp --only-show-errors "/opt/abc/tools/$t" "s3://abc-reserved/binary_tools/$t-$K-$A" \
           && echo "published $t-$K-$A"
       fi
     done

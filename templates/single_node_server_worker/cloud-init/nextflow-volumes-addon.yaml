@@ -69,8 +69,8 @@ runcmd:
       curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1 && break
       sleep 2
     done
-    export MC_HOST_local="http://minioadmin:minioadmin@127.0.0.1:9000"
-    mc mb --ignore-existing local/nf-work >/dev/null 2>&1 && echo "bucket nf-work ready"
+    { abc-s3 s3api head-bucket --bucket nf-work 2>/dev/null || abc-s3 s3 mb s3://nf-work >/dev/null; } \
+      && echo "bucket nf-work ready" || echo "ERROR: bucket nf-work could not be created" >&2
 
   - systemctl restart nomad.service
   # -dev discards state on restart, so the platform job must be resubmitted.

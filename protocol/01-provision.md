@@ -137,10 +137,16 @@ failure here is a failure of the paper's description, not only of your deploymen
 |---|---|---|
 | Nomad | `nomad node status` | every worker `ready`; on single-node, one node |
 | Nomad ACL | `nomad acl token self` | a token on topology B; an error on topology A, which has no access control |
-| MinIO | `mc alias set local <endpoint> <key> <secret> && mc ls local` | the platform buckets are listed |
+| MinIO | topology A: `multipass exec abc-node -- abc-s3 s3 ls`; topology B: `multipass exec abc-server -- mc ls abc` | the platform buckets are listed |
 | `abc-auth-svc` | `curl -sf <auth-endpoint>/healthz` | healthy on topology B; **not deployed on topology A** |
 | JupyterHub | open `https://<server>/hub/login` | login page, authenticated by `abc-auth-svc` |
 | tus ingestion | `abc data upload <file>`, interrupt it, re-run | resumes from the last offset rather than from zero |
+
+Neither object-store check needs a client on your own machine. `abc-s3` is the
+AWS CLI, installed in the VM and pointed at its MinIO; `mc` is installed on the
+multi-node server because that topology manages MinIO users and policies. Where
+both come from, now that MinIO's own download site is closed, is in
+[`templates/README.md`](../templates/README.md#object-store-source).
 
 ## Install and point the CLI
 
